@@ -935,6 +935,7 @@ function onOpen() {
       .addItem('Fetch Latest Archive Only', 'fetchLatestArchive')
       .addItem('Fetch Player Stats', 'fetchPlayerStats')
       .addItem('Compute Reconstructed Stats (prompt)', 'promptReconstructedStats')
+      .addItem('Reconstruct Daily Stats (all days)', 'reconstructDailyStatsAll')
       .addSeparator()
       .addItem('View Execution Logs', 'openLogsSheet')
       .addToUi();
