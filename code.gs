@@ -45,7 +45,7 @@ const HEADERS = {
     'Moves & Times'
   ],
   LOGS: ['Timestamp', 'Function', 'Username', 'Status', 'Archives Processed', 'New Games Added', 'Total Games', 'Execution Time (ms)', 'Errors', 'Notes'],
-  STATS: ['Path', 'Value']
+  STATS: ['Pulled At']
 };
 
 /**
@@ -180,39 +180,77 @@ function fetchPlayerStats() {
     throw error;
   }
 
-  // Ensure sheet and headers
+  // Ensure sheet
   let statsSheet = ss.getSheetByName(SHEETS.STATS);
   if (!statsSheet) {
     statsSheet = ss.insertSheet(SHEETS.STATS);
   }
-  statsSheet.clear();
-  statsSheet.getRange(1, 1, 1, HEADERS.STATS.length).setValues([HEADERS.STATS]);
-  statsSheet.getRange(1, 1, 1, HEADERS.STATS.length).setFontWeight('bold');
-  statsSheet.getRange(1, 1, 1, HEADERS.STATS.length).setBackground('#fbbc04').setFontColor('black');
 
-  // Flatten JSON to path-value rows
-  const rows = [];
-  function walk(obj, pathParts) {
+  // Convert epoch fields to date strings
+  function convertEpochsDeep(obj) {
+    if (obj === null || obj === undefined) return obj;
+    if (typeof obj === 'number' && Number.isFinite(obj) && obj > 100000000 && obj < 9999999999) {
+      // Likely epoch seconds
+      return formatDateTime(new Date(obj * 1000));
+    }
+    if (Array.isArray(obj)) return obj.map(convertEpochsDeep);
+    if (typeof obj === 'object') {
+      const out = {};
+      Object.keys(obj).forEach(k => { out[k] = convertEpochsDeep(obj[k]); });
+      return out;
+    }
+    return obj;
+  }
+  const converted = convertEpochsDeep(data);
+
+  // Flatten to a map path->value
+  const flat = {};
+  function flatten(obj, pathParts) {
     if (obj === null || obj === undefined) return;
     const isPrimitive = ['string', 'number', 'boolean'].includes(typeof obj);
     if (isPrimitive) {
-      rows.push([pathParts.join('.'), obj]);
+      flat[pathParts.join('.')] = obj;
       return;
     }
     if (Array.isArray(obj)) {
-      obj.forEach((item, index) => walk(item, pathParts.concat([String(index)])));
+      obj.forEach((item, index) => flatten(item, pathParts.concat([String(index)])));
       return;
     }
-    Object.keys(obj).forEach(key => walk(obj[key], pathParts.concat([key])));
+    Object.keys(obj).forEach(key => flatten(obj[key], pathParts.concat([key])));
   }
-  walk(data, []);
+  flatten(converted, []);
 
-  if (rows.length === 0) {
-    rows.push(['info', 'No data']);
+  // Build dynamic headers (Pulled At + sorted keys) and insert newest row at top
+  const pulledAt = new Date();
+  const keys = Object.keys(flat).sort();
+  const headers = ['Pulled At'].concat(keys);
+
+  // If no headers or header mismatch, rewrite header row
+  const existingLastRow = statsSheet.getLastRow();
+  const existingLastCol = statsSheet.getLastColumn();
+  const needHeaders = existingLastRow === 0 || existingLastCol === 0 || statsSheet.getRange(1, 1, 1, existingLastCol).getValues()[0].join('\u0001') !== headers.join('\u0001');
+  if (needHeaders) {
+    statsSheet.clear();
+    statsSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    statsSheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+    statsSheet.getRange(1, 1, 1, headers.length).setBackground('#fbbc04').setFontColor('black');
   }
 
-  statsSheet.getRange(2, 1, rows.length, HEADERS.STATS.length).setValues(rows);
-  SpreadsheetApp.getActiveSpreadsheet().toast(`Fetched ${rows.length} stats rows for ${username}`, 'Stats Updated', 5);
+  // Build row values in header order
+  const row = [formatDateTime(pulledAt)];
+  for (const key of headers.slice(1)) {
+    row.push(flat[key] !== undefined ? flat[key] : '');
+  }
+
+  // Insert a new row at position 2 (newest on top)
+  if (statsSheet.getLastRow() >= 1) {
+    statsSheet.insertRows(2, 1);
+    statsSheet.getRange(2, 1, 1, headers.length).setValues([row]);
+  } else {
+    // Should not happen due to header creation, but safe fallback
+    statsSheet.getRange(2, 1, 1, headers.length).setValues([row]);
+  }
+  SpreadsheetApp.getActiveSpreadsheet().toast(`Stats pulled at ${formatDateTime(pulledAt)} for ${username}`, 'Stats Updated', 5);
 }
 
 /**
@@ -403,6 +441,21 @@ function computeFormat(rules, timeClass) {
     return normalizedTimeClass || 'unknown';
   }
   return normalizedRules;
+}
+
+/**
+ * Formats a Date to M/D/YYYY HH:MM:SS (24h) as requested
+ */
+function formatDateTime(dateObj) {
+  if (!(dateObj instanceof Date) || isNaN(dateObj.getTime())) return '';
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const m = dateObj.getMonth() + 1;
+  const d = dateObj.getDate();
+  const y = dateObj.getFullYear();
+  const hh = pad2(dateObj.getHours());
+  const mm = pad2(dateObj.getMinutes());
+  const ss = pad2(dateObj.getSeconds());
+  return `${m}/${d}/${y} ${hh}:${mm}:${ss}`;
 }
 function gameToRow(game) {
   const pgn = game.pgn || '';
