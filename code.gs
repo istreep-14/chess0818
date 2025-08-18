@@ -463,7 +463,7 @@ function promptReconstructedStats() {
     const text = response.getResponseText();
     computeStatsAsOf(text);
   } catch (err) {
-    // Fallback: if UI is not available, use a default (now) or log
+    // fallback to now if headless
     computeStatsAsOf(new Date().toISOString());
   }
 }
