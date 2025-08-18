@@ -544,9 +544,9 @@ function reconstructDailyStatsAll() {
     existing.flat().forEach(v => { if (v) existingSet.add(String(v)); });
   }
 
-  const rowsDesc = [];
+  const rowsAsc = [];
   let idx = 0;
-  for (let day = new Date(today); day >= start; ) {
+  for (let day = new Date(start); day <= today; ) {
     while (idx < events.length && events[idx].date <= day) {
       const e = events[idx++];
       const bucket = e.bucket;
@@ -560,7 +560,7 @@ function reconstructDailyStatsAll() {
 
     const asOfStr = formatDateTime(new Date(day));
     if (!existingSet.has(asOfStr)) {
-      rowsDesc.push([
+      rowsAsc.push([
         asOfStr, username,
         acc.bullet.rating, acc.bullet.wins, acc.bullet.losses, acc.bullet.draws, acc.bullet.games,
         acc.blitz.rating, acc.blitz.wins, acc.blitz.losses, acc.blitz.draws, acc.blitz.games,
@@ -571,10 +571,11 @@ function reconstructDailyStatsAll() {
       ]);
     }
 
-    day.setDate(day.getDate() - 1);
+    day.setDate(day.getDate() + 1);
     day.setHours(23, 59, 59, 999);
   }
 
+  const rowsDesc = rowsAsc.reverse();
   if (rowsDesc.length > 0) {
     reconSheet.insertRows(2, rowsDesc.length);
     reconSheet.getRange(2, 1, rowsDesc.length, HEADERS.RECON_STATS.length).setValues(rowsDesc);
