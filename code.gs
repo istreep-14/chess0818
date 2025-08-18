@@ -454,6 +454,134 @@ function computeStatsAsOf(isoDateString) {
   SpreadsheetApp.getActive().toast(`Reconstructed stats as of ${formatDateTime(asOf)}`, 'Reconstruct Stats', 5);
 }
 
+/**
+ * Reconstruct end-of-day stats for each day from first game to today
+ */
+function reconstructDailyStatsAll() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const gamesSheet = ss.getSheetByName(SHEETS.GAMES);
+  const reconSheet = ss.getSheetByName(SHEETS.RECON_STATS);
+  const username = getUsername();
+  if (!gamesSheet || gamesSheet.getLastRow() < 2) {
+    SpreadsheetApp.getActive().toast('No games to reconstruct stats from.', 'Reconstruct Daily Stats', 5);
+    return;
+  }
+
+  // Read all games
+  const lastRow = gamesSheet.getLastRow();
+  const values = gamesSheet.getRange(2, 1, lastRow - 1, HEADERS.GAMES.length).getValues();
+
+  // Build events for games the user played in
+  const events = [];
+  values.forEach((row) => {
+    const timeClass = row[3];
+    const rules = row[4];
+    const endTime = row[6];
+    const whiteUser = row[7];
+    const whiteRating = row[8];
+    const whiteResult = row[9];
+    const blackUser = row[10];
+    const blackRating = row[11];
+    const blackResult = row[12];
+
+    if (!endTime) return;
+    const end = endTime instanceof Date ? endTime : new Date(endTime);
+    if (!(end instanceof Date) || isNaN(end.getTime())) return;
+
+    const r = String(rules || '').toLowerCase();
+    const t = String(timeClass || '').toLowerCase();
+    const isStandard = r === 'chess' || r === '';
+    const is960 = r.includes('960');
+    let bucket;
+    if (isStandard) bucket = t; else if (is960 && t === 'daily') bucket = 'daily960'; else if (is960) bucket = 'chess960';
+    if (!bucket) return;
+
+    const isWhite = String(whiteUser || '').toLowerCase() === String(username || '').toLowerCase();
+    const isBlack = String(blackUser || '').toLowerCase() === String(username || '').toLowerCase();
+    if (!isWhite && !isBlack) return;
+
+    const wr = String(whiteResult || '').toLowerCase();
+    const br = String(blackResult || '').toLowerCase();
+    const res = isWhite ? wr : br;
+    let result;
+    if (res === 'win' || (res === 'checkmated' && !isWhite)) result = 'win';
+    else if (res === 'resigned' || res === 'timeout' || res === 'lose' || (res === 'checkmated' && isWhite)) result = 'loss';
+    else if (res === 'draw' || res === 'stalemate' || res === 'repetition' || res === 'agreed') result = 'draw';
+    else {
+      const opp = isWhite ? br : wr;
+      if (opp === 'win') result = 'loss';
+      else if (opp === 'lose') result = 'win';
+      else if (opp === 'draw') result = 'draw';
+    }
+
+    const rating = isWhite ? whiteRating : blackRating;
+    events.push({ date: end, bucket, result, rating });
+  });
+
+  if (events.length === 0) {
+    SpreadsheetApp.getActive().toast('No user games found to reconstruct.', 'Reconstruct Daily Stats', 5);
+    return;
+  }
+
+  // Sort by date ascending
+  events.sort((a, b) => a.date - b.date);
+
+  // Day range
+  const start = new Date(events[0].date);
+  start.setHours(0, 0, 0, 0);
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+
+  // Accumulators
+  const mk = () => ({ rating: '', wins: 0, losses: 0, draws: 0, games: 0 });
+  const acc = { bullet: mk(), blitz: mk(), rapid: mk(), daily: mk(), chess960: mk(), daily960: mk() };
+
+  // Avoid duplicates based on As Of text
+  const existingSet = new Set();
+  const existingRows = Math.max(0, reconSheet.getLastRow() - 1);
+  if (existingRows > 0) {
+    const existing = reconSheet.getRange(2, 1, existingRows, 1).getValues();
+    existing.flat().forEach(v => { if (v) existingSet.add(String(v)); });
+  }
+
+  const rowsDesc = [];
+  let idx = 0;
+  for (let day = new Date(today); day >= start; ) {
+    while (idx < events.length && events[idx].date <= day) {
+      const e = events[idx++];
+      const bucket = e.bucket;
+      if (!acc[bucket]) continue;
+      if (e.result === 'win') acc[bucket].wins += 1;
+      else if (e.result === 'loss') acc[bucket].losses += 1;
+      else if (e.result === 'draw') acc[bucket].draws += 1;
+      acc[bucket].games += 1;
+      if (e.rating !== '' && e.rating !== null && e.rating !== undefined) acc[bucket].rating = e.rating;
+    }
+
+    const asOfStr = formatDateTime(new Date(day));
+    if (!existingSet.has(asOfStr)) {
+      rowsDesc.push([
+        asOfStr, username,
+        acc.bullet.rating, acc.bullet.wins, acc.bullet.losses, acc.bullet.draws, acc.bullet.games,
+        acc.blitz.rating, acc.blitz.wins, acc.blitz.losses, acc.blitz.draws, acc.blitz.games,
+        acc.rapid.rating, acc.rapid.wins, acc.rapid.losses, acc.rapid.draws, acc.rapid.games,
+        acc.daily.rating, acc.daily.wins, acc.daily.losses, acc.daily.draws, acc.daily.games,
+        acc.chess960.rating, acc.chess960.wins, acc.chess960.losses, acc.chess960.draws, acc.chess960.games,
+        acc.daily960.rating, acc.daily960.wins, acc.daily960.losses, acc.daily960.draws, acc.daily960.games
+      ]);
+    }
+
+    day.setDate(day.getDate() - 1);
+    day.setHours(23, 59, 59, 999);
+  }
+
+  if (rowsDesc.length > 0) {
+    reconSheet.insertRows(2, rowsDesc.length);
+    reconSheet.getRange(2, 1, rowsDesc.length, HEADERS.RECON_STATS.length).setValues(rowsDesc);
+  }
+  SpreadsheetApp.getActive().toast(`Reconstructed ${rowsDesc.length} daily rows`, 'Reconstruct Daily Stats', 5);
+}
+
 /** Prompt for a date and compute reconstructed stats */
 function promptReconstructedStats() {
   try {
