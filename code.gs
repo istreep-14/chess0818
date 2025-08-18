@@ -8,7 +8,8 @@ const SHEETS = {
   GAMES: 'Game Data',
   LOGS: 'Execution Logs',
   STATS: 'Player Stats',
-  RECON_STATS: 'Reconstructed Stats'
+  RECON_STATS: 'Reconstructed Stats',
+  DAILY_STATS: 'Daily Stats'
 };
 
 const HEADERS = {
@@ -55,7 +56,14 @@ const HEADERS = {
     'daily.rating','daily.wins','daily.losses','daily.draws','daily.games',
     'chess960.rating','chess960.wins','chess960.losses','chess960.draws','chess960.games',
     'daily960.rating','daily960.wins','daily960.losses','daily960.draws','daily960.games'
-  ]
+  ],
+  DAILY_STATS: (function() {
+    const variants = ['Bullet','Blitz','Rapid','Daily','Chess960','Daily960'];
+    const cols = ['EOD Rating','Rating Change','Games','Wins','Losses','Draws','Win %','Score'];
+    const headers = ['Date'];
+    variants.forEach(v => cols.forEach(c => headers.push(`${v} ${c}`)));
+    return headers;
+  })()
 };
 
 /**
@@ -125,6 +133,17 @@ function setupSheets() {
   let statsSheet = ss.getSheetByName(SHEETS.STATS);
   if (!statsSheet) {
     statsSheet = ss.insertSheet(SHEETS.STATS);
+  }
+
+  // Create Daily Stats sheet
+  let dailySheet = ss.getSheetByName(SHEETS.DAILY_STATS);
+  if (!dailySheet) {
+    dailySheet = ss.insertSheet(SHEETS.DAILY_STATS);
+  }
+  if (dailySheet.getLastRow() === 0) {
+    dailySheet.getRange(1, 1, 1, HEADERS.DAILY_STATS.length).setValues([HEADERS.DAILY_STATS]);
+    dailySheet.getRange(1, 1, 1, HEADERS.DAILY_STATS.length).setFontWeight('bold');
+    dailySheet.getRange(1, 1, 1, HEADERS.DAILY_STATS.length).setBackground('#a7ffeb').setFontColor('#00695c');
   }
   if (statsSheet.getLastRow() === 0) {
     statsSheet.getRange(1, 1, 1, HEADERS.STATS.length).setValues([HEADERS.STATS]);
@@ -581,6 +600,79 @@ function reconstructDailyStatsAll() {
     reconSheet.getRange(2, 1, rowsDesc.length, HEADERS.RECON_STATS.length).setValues(rowsDesc);
   }
   SpreadsheetApp.getActive().toast(`Reconstructed ${rowsDesc.length} daily rows`, 'Reconstruct Daily Stats', 5);
+}
+
+/**
+ * Build the Daily Stats sheet by combining reconstructed snapshots and day-over-day deltas
+ */
+function buildDailyStats() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const reconSheet = ss.getSheetByName(SHEETS.RECON_STATS);
+  const dailySheet = ss.getSheetByName(SHEETS.DAILY_STATS);
+  if (!reconSheet || reconSheet.getLastRow() < 2) {
+    SpreadsheetApp.getActive().toast('No reconstructed stats found. Run reconstruction first.', 'Daily Stats', 5);
+    return;
+  }
+
+  const rowCount = reconSheet.getLastRow() - 1;
+  const recon = reconSheet.getRange(2, 1, rowCount, HEADERS.RECON_STATS.length).getValues();
+  // Recon is newest-first in our writing; sort ascending to compute deltas
+  recon.sort((a, b) => new Date(a[0]) - new Date(b[0]));
+
+  const idx = {
+    bullet: { r: 2, w: 3, l: 4, d: 5, g: 6 },
+    blitz:  { r: 7, w: 8, l: 9, d:10, g:11 },
+    rapid:  { r:12, w:13, l:14, d:15, g:16 },
+    daily:  { r:17, w:18, l:19, d:20, g:21 },
+    chess960:{ r:22, w:23, l:24, d:25, g:26 },
+    daily960:{ r:27, w:28, l:29, d:30, g:31 }
+  };
+
+  function computeOne(cur, prev, key) {
+    const i = idx[key];
+    const curR = cur[i.r];
+    const curW = Number(cur[i.w] || 0);
+    const curL = Number(cur[i.l] || 0);
+    const curD = Number(cur[i.d] || 0);
+    const curG = Number(cur[i.g] || 0);
+    const prevW = Number(prev ? prev[i.w] || 0 : 0);
+    const prevL = Number(prev ? prev[i.l] || 0 : 0);
+    const prevD = Number(prev ? prev[i.d] || 0 : 0);
+    const prevG = prevW + prevL + prevD;
+    const deltaG = Math.max(0, curG - prevG);
+    const winsToday = curW - prevW;
+    const lossesToday = curL - prevL;
+    const drawsToday = curD - prevD;
+    const ratingPrev = prev ? prev[i.r] : '';
+    const ratingChange = (Number(curR) || 0) - (Number(ratingPrev) || 0);
+    const winPct = deltaG > 0 ? winsToday / deltaG : 0;
+    const score = winsToday + 0.5 * drawsToday;
+    return [curR || '', ratingChange, deltaG, winsToday, lossesToday, drawsToday, winPct, `${score}/${deltaG}`];
+  }
+
+  const outAsc = [];
+  for (let i = 0; i < recon.length; i++) {
+    const cur = recon[i];
+    const prev = i > 0 ? recon[i - 1] : null;
+    const date = cur[0];
+    outAsc.push([
+      date,
+      ...computeOne(cur, prev, 'bullet'),
+      ...computeOne(cur, prev, 'blitz'),
+      ...computeOne(cur, prev, 'rapid'),
+      ...computeOne(cur, prev, 'daily'),
+      ...computeOne(cur, prev, 'chess960'),
+      ...computeOne(cur, prev, 'daily960')
+    ]);
+  }
+
+  const outDesc = outAsc.reverse();
+  dailySheet.clear();
+  dailySheet.getRange(1, 1, 1, HEADERS.DAILY_STATS.length).setValues([HEADERS.DAILY_STATS]);
+  dailySheet.getRange(1, 1, 1, HEADERS.DAILY_STATS.length).setFontWeight('bold');
+  dailySheet.getRange(1, 1, 1, HEADERS.DAILY_STATS.length).setBackground('#a7ffeb').setFontColor('#00695c');
+  dailySheet.getRange(2, 1, outDesc.length, HEADERS.DAILY_STATS.length).setValues(outDesc);
+  SpreadsheetApp.getActive().toast(`Daily Stats built for ${outDesc.length} days`, 'Daily Stats', 5);
 }
 
 /** Prompt for a date and compute reconstructed stats */
@@ -1065,6 +1157,7 @@ function onOpen() {
       .addItem('Fetch Player Stats', 'fetchPlayerStats')
       .addItem('Compute Reconstructed Stats (prompt)', 'promptReconstructedStats')
       .addItem('Reconstruct Daily Stats (all days)', 'reconstructDailyStatsAll')
+      .addItem('Build Daily Stats Sheet', 'buildDailyStats')
       .addSeparator()
       .addItem('View Execution Logs', 'openLogsSheet')
       .addToUi();
