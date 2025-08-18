@@ -7,7 +7,8 @@ const SHEETS = {
   ARCHIVES: 'Archives',
   GAMES: 'Game Data',
   LOGS: 'Execution Logs',
-  STATS: 'Player Stats'
+  STATS: 'Player Stats',
+  RECON_STATS: 'Reconstructed Stats'
 };
 
 const HEADERS = {
@@ -45,7 +46,16 @@ const HEADERS = {
     'Moves & Times'
   ],
   LOGS: ['Timestamp', 'Function', 'Username', 'Status', 'Archives Processed', 'New Games Added', 'Total Games', 'Execution Time (ms)', 'Errors', 'Notes'],
-  STATS: ['Pulled At']
+  STATS: ['Pulled At'],
+  RECON_STATS: [
+    'As Of', 'Username',
+    'bullet.rating','bullet.wins','bullet.losses','bullet.draws','bullet.games',
+    'blitz.rating','blitz.wins','blitz.losses','blitz.draws','blitz.games',
+    'rapid.rating','rapid.wins','rapid.losses','rapid.draws','rapid.games',
+    'daily.rating','daily.wins','daily.losses','daily.draws','daily.games',
+    'chess960.rating','chess960.wins','chess960.losses','chess960.draws','chess960.games',
+    'daily960.rating','daily960.wins','daily960.losses','daily960.draws','daily960.games'
+  ]
 };
 
 /**
@@ -120,6 +130,17 @@ function setupSheets() {
     statsSheet.getRange(1, 1, 1, HEADERS.STATS.length).setValues([HEADERS.STATS]);
     statsSheet.getRange(1, 1, 1, HEADERS.STATS.length).setFontWeight('bold');
     statsSheet.getRange(1, 1, 1, HEADERS.STATS.length).setBackground('#fbbc04').setFontColor('black');
+  }
+
+  // Create Reconstructed Stats sheet
+  let reconSheet = ss.getSheetByName(SHEETS.RECON_STATS);
+  if (!reconSheet) {
+    reconSheet = ss.insertSheet(SHEETS.RECON_STATS);
+  }
+  if (reconSheet.getLastRow() === 0) {
+    reconSheet.getRange(1, 1, 1, HEADERS.RECON_STATS.length).setValues([HEADERS.RECON_STATS]);
+    reconSheet.getRange(1, 1, 1, HEADERS.RECON_STATS.length).setFontWeight('bold');
+    reconSheet.getRange(1, 1, 1, HEADERS.RECON_STATS.length).setBackground('#9aa0a6').setFontColor('white');
   }
 }
 
@@ -311,6 +332,135 @@ function fetchGamesFromArchive(archiveUrl) {
     console.error(`Error fetching games from ${archiveUrl}:`, error);
     return [];
   }
+}
+
+/**
+ * Compute reconstructed stats as of a given ISO date string
+ * - Standard time classes (bullet/blitz/rapid/daily) include only rules === 'chess'
+ * - Variants (currently chess960) tracked separately, with special 'daily960'
+ */
+function computeStatsAsOf(isoDateString) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const gamesSheet = ss.getSheetByName(SHEETS.GAMES);
+  const reconSheet = ss.getSheetByName(SHEETS.RECON_STATS);
+  const username = getUsername();
+  if (!gamesSheet || gamesSheet.getLastRow() < 2) {
+    SpreadsheetApp.getActive().toast('No games available to reconstruct stats.', 'Reconstruct Stats', 5);
+    return;
+  }
+
+  const asOf = new Date(isoDateString);
+  if (!(asOf instanceof Date) || isNaN(asOf.getTime())) {
+    throw new Error('Invalid date supplied. Use an ISO string like 2024-12-31T23:59:59Z');
+  }
+
+  // Read needed columns from Game Data
+  // Columns per HEADERS.GAMES (1-based):
+  // 1 url, 4 time_class, 5 rules, 6 format, 7 end_time, 8-13 players+results
+  const lastRow = gamesSheet.getLastRow();
+  const rows = gamesSheet.getRange(2, 1, lastRow - 1, HEADERS.GAMES.length).getValues();
+
+  // Accumulator structure
+  const template = () => ({ rating: '', wins: 0, losses: 0, draws: 0, games: 0, lastRating: '' });
+  const acc = {
+    bullet: template(),
+    blitz: template(),
+    rapid: template(),
+    daily: template(),
+    chess960: template(),
+    daily960: template()
+  };
+
+  function classifyBucket(rules, timeClass) {
+    const r = String(rules || '').toLowerCase();
+    const t = String(timeClass || '').toLowerCase();
+    const isStandard = r === 'chess' || r === '';
+    const is960 = r.includes('960');
+    if (isStandard) return t; // bullet/blitz/rapid/daily
+    if (is960 && t === 'daily') return 'daily960';
+    if (is960) return 'chess960';
+    return undefined; // ignore other variants for now
+  }
+
+  function coalesceResult(whiteResult, blackResult, playerIsWhite) {
+    const wr = String(whiteResult || '').toLowerCase();
+    const br = String(blackResult || '').toLowerCase();
+    const result = playerIsWhite ? wr : br;
+    if (result === 'win' || result === 'checkmated' && !playerIsWhite) return 'win';
+    if (result === 'resigned' || result === 'timeout' || result === 'lose' || result === 'checkmated' && playerIsWhite) return 'loss';
+    if (result === 'draw' || result === 'stalemate' || result === 'repetition' || result === 'agreed') return 'draw';
+    // Fallback: infer by opponent
+    const opp = playerIsWhite ? br : wr;
+    if (opp === 'win') return 'loss';
+    if (opp === 'lose') return 'win';
+    if (opp === 'draw') return 'draw';
+    return undefined;
+  }
+
+  // For rating as of date, we take the player's rating column for the side they played
+  rows.forEach((row) => {
+    const url = row[0];
+    const timeClass = row[3];
+    const rules = row[4];
+    const endTime = row[6];
+    const whiteUser = row[7];
+    const whiteRating = row[8];
+    const whiteResult = row[9];
+    const blackUser = row[10];
+    const blackRating = row[11];
+    const blackResult = row[12];
+
+    if (!endTime) return;
+    const end = endTime instanceof Date ? endTime : new Date(endTime);
+    if (!(end instanceof Date) || isNaN(end.getTime()) || end > asOf) return;
+
+    const bucket = classifyBucket(rules, timeClass);
+    if (!bucket || !acc[bucket]) return;
+
+    const playerIsWhite = String(whiteUser || '').toLowerCase() === String(username || '').toLowerCase();
+    const playerIsBlack = String(blackUser || '').toLowerCase() === String(username || '').toLowerCase();
+    if (!playerIsWhite && !playerIsBlack) return;
+
+    const result = coalesceResult(whiteResult, blackResult, playerIsWhite);
+    if (result === 'win') acc[bucket].wins += 1;
+    else if (result === 'loss') acc[bucket].losses += 1;
+    else if (result === 'draw') acc[bucket].draws += 1;
+    acc[bucket].games += 1;
+
+    const rating = playerIsWhite ? whiteRating : blackRating;
+    if (rating !== '' && rating !== null && rating !== undefined) {
+      acc[bucket].lastRating = rating; // keep last seen rating up to asOf
+    }
+  });
+
+  // Finalize ratings
+  Object.keys(acc).forEach(k => { acc[k].rating = acc[k].lastRating || ''; delete acc[k].lastRating; });
+
+  // Build output row
+  const row = [formatDateTime(asOf), username,
+    acc.bullet.rating, acc.bullet.wins, acc.bullet.losses, acc.bullet.draws, acc.bullet.games,
+    acc.blitz.rating, acc.blitz.wins, acc.blitz.losses, acc.blitz.draws, acc.blitz.games,
+    acc.rapid.rating, acc.rapid.wins, acc.rapid.losses, acc.rapid.draws, acc.rapid.games,
+    acc.daily.rating, acc.daily.wins, acc.daily.losses, acc.daily.draws, acc.daily.games,
+    acc.chess960.rating, acc.chess960.wins, acc.chess960.losses, acc.chess960.draws, acc.chess960.games,
+    acc.daily960.rating, acc.daily960.wins, acc.daily960.losses, acc.daily960.draws, acc.daily960.games
+  ];
+
+  // Insert newest on top under headers
+  if (reconSheet.getLastRow() >= 1) {
+    reconSheet.insertRows(2, 1);
+  }
+  reconSheet.getRange(2, 1, 1, HEADERS.RECON_STATS.length).setValues([row]);
+  SpreadsheetApp.getActive().toast(`Reconstructed stats as of ${formatDateTime(asOf)}`, 'Reconstruct Stats', 5);
+}
+
+/** Prompt for a date and compute reconstructed stats */
+function promptReconstructedStats() {
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.prompt('Reconstruct Stats', 'Enter an ISO date/time (e.g., 2024-12-31T23:59:59Z):', ui.ButtonSet.OK_CANCEL);
+  if (response.getSelectedButton() !== ui.Button.OK) return;
+  const text = response.getResponseText();
+  computeStatsAsOf(text);
 }
 
 /**
@@ -778,6 +928,7 @@ function onOpen() {
     .addItem('Fetch Recent Data (3 archives)', 'fetchRecentData')
     .addItem('Fetch Latest Archive Only', 'fetchLatestArchive')
     .addItem('Fetch Player Stats', 'fetchPlayerStats')
+    .addItem('Compute Reconstructed Stats (prompt)', 'promptReconstructedStats')
     .addSeparator()
     .addItem('View Execution Logs', 'openLogsSheet')
     .addToUi();
