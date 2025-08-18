@@ -535,18 +535,17 @@ function reconstructDailyStatsAll() {
   // Accumulators
   const mk = () => ({ rating: '', wins: 0, losses: 0, draws: 0, games: 0 });
   const acc = { bullet: mk(), blitz: mk(), rapid: mk(), daily: mk(), chess960: mk(), daily960: mk() };
+  // Previous day's end-of-day snapshot for delta computation
+  const prev = { bullet: mk(), blitz: mk(), rapid: mk(), daily: mk(), chess960: mk(), daily960: mk() };
 
-  // Avoid duplicates based on As Of text
-  const existingSet = new Set();
-  const existingRows = Math.max(0, reconSheet.getLastRow() - 1);
-  if (existingRows > 0) {
-    const existing = reconSheet.getRange(2, 1, existingRows, 1).getValues();
-    existing.flat().forEach(v => { if (v) existingSet.add(String(v)); });
-  }
+  // Helper to normalize a Date to a simple M/D/YYYY key
+  const dateKey = (dateObj) => `${dateObj.getMonth() + 1}/${dateObj.getDate()}/${dateObj.getFullYear()}`;
+
+  // We will rebuild the sheet entirely, so no need to read existing rows for dedup
 
   const rowsAsc = [];
   let idx = 0;
-  for (let day = new Date(start); day <= today; ) {
+  for (let day = new Date(start.getFullYear(), start.getMonth(), start.getDate(), 23, 59, 59, 999); day <= today; ) {
     while (idx < events.length && events[idx].date <= day) {
       const e = events[idx++];
       const bucket = e.bucket;
@@ -559,25 +558,51 @@ function reconstructDailyStatsAll() {
     }
 
     const asOfStr = formatDateTime(new Date(day));
-    if (!existingSet.has(asOfStr)) {
-      rowsAsc.push([
-        asOfStr, username,
-        acc.bullet.rating, acc.bullet.wins, acc.bullet.losses, acc.bullet.draws, acc.bullet.games,
-        acc.blitz.rating, acc.blitz.wins, acc.blitz.losses, acc.blitz.draws, acc.blitz.games,
-        acc.rapid.rating, acc.rapid.wins, acc.rapid.losses, acc.rapid.draws, acc.rapid.games,
-        acc.daily.rating, acc.daily.wins, acc.daily.losses, acc.daily.draws, acc.daily.games,
-        acc.chess960.rating, acc.chess960.wins, acc.chess960.losses, acc.chess960.draws, acc.chess960.games,
-        acc.daily960.rating, acc.daily960.wins, acc.daily960.losses, acc.daily960.draws, acc.daily960.games
-      ]);
-    }
+    const asOfKey = dateKey(day);
+    // Compute per-day deltas relative to previous day's EOD totals
+    const delta = (bucket) => ({
+      wins: acc[bucket].wins - prev[bucket].wins,
+      losses: acc[bucket].losses - prev[bucket].losses,
+      draws: acc[bucket].draws - prev[bucket].draws,
+      games: acc[bucket].games - prev[bucket].games
+    });
+    const dBullet = delta('bullet');
+    const dBlitz = delta('blitz');
+    const dRapid = delta('rapid');
+    const dDaily = delta('daily');
+    const d960 = delta('chess960');
+    const dDaily960 = delta('daily960');
+
+    rowsAsc.push([
+      asOfStr, username,
+      acc.bullet.rating, dBullet.wins, dBullet.losses, dBullet.draws, dBullet.games,
+      acc.blitz.rating, dBlitz.wins, dBlitz.losses, dBlitz.draws, dBlitz.games,
+      acc.rapid.rating, dRapid.wins, dRapid.losses, dRapid.draws, dRapid.games,
+      acc.daily.rating, dDaily.wins, dDaily.losses, dDaily.draws, dDaily.games,
+      acc.chess960.rating, d960.wins, d960.losses, d960.draws, d960.games,
+      acc.daily960.rating, dDaily960.wins, dDaily960.losses, dDaily960.draws, dDaily960.games
+    ]);
+
+    // Update previous snapshot to current EOD for next day's delta computation
+    ['bullet','blitz','rapid','daily','chess960','daily960'].forEach(b => {
+      prev[b].wins = acc[b].wins;
+      prev[b].losses = acc[b].losses;
+      prev[b].draws = acc[b].draws;
+      prev[b].games = acc[b].games;
+      prev[b].rating = acc[b].rating;
+    });
 
     day.setDate(day.getDate() + 1);
     day.setHours(23, 59, 59, 999);
   }
 
   const rowsDesc = rowsAsc.reverse();
+  // Clear existing data rows and write fresh, one row per day
+  const oldRows = Math.max(0, reconSheet.getLastRow() - 1);
+  if (oldRows > 0) {
+    reconSheet.getRange(2, 1, oldRows, HEADERS.RECON_STATS.length).clearContent();
+  }
   if (rowsDesc.length > 0) {
-    reconSheet.insertRows(2, rowsDesc.length);
     reconSheet.getRange(2, 1, rowsDesc.length, HEADERS.RECON_STATS.length).setValues(rowsDesc);
   }
   SpreadsheetApp.getActive().toast(`Reconstructed ${rowsDesc.length} daily rows`, 'Reconstruct Daily Stats', 5);
