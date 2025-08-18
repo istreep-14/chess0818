@@ -7,8 +7,7 @@ const SHEETS = {
   ARCHIVES: 'Archives',
   GAMES: 'Game Data',
   LOGS: 'Execution Logs',
-  STATS: 'Player Stats',
-  RECON_STATS: 'Reconstructed Stats'
+  STATS: 'Player Stats'
 };
 
 const HEADERS = {
@@ -46,16 +45,7 @@ const HEADERS = {
     'Moves & Times'
   ],
   LOGS: ['Timestamp', 'Function', 'Username', 'Status', 'Archives Processed', 'New Games Added', 'Total Games', 'Execution Time (ms)', 'Errors', 'Notes'],
-  STATS: ['Pulled At'],
-  RECON_STATS: [
-    'As Of', 'Username',
-    'bullet.rating','bullet.wins','bullet.losses','bullet.draws','bullet.games',
-    'blitz.rating','blitz.wins','blitz.losses','blitz.draws','blitz.games',
-    'rapid.rating','rapid.wins','rapid.losses','rapid.draws','rapid.games',
-    'daily.rating','daily.wins','daily.losses','daily.draws','daily.games',
-    'chess960.rating','chess960.wins','chess960.losses','chess960.draws','chess960.games',
-    'daily960.rating','daily960.wins','daily960.losses','daily960.draws','daily960.games'
-  ]
+  STATS: ['Pulled At']
 };
 
 /**
@@ -132,16 +122,7 @@ function setupSheets() {
     statsSheet.getRange(1, 1, 1, HEADERS.STATS.length).setBackground('#fbbc04').setFontColor('black');
   }
 
-  // Create Reconstructed Stats sheet
-  let reconSheet = ss.getSheetByName(SHEETS.RECON_STATS);
-  if (!reconSheet) {
-    reconSheet = ss.insertSheet(SHEETS.RECON_STATS);
-  }
-  if (reconSheet.getLastRow() === 0) {
-    reconSheet.getRange(1, 1, 1, HEADERS.RECON_STATS.length).setValues([HEADERS.RECON_STATS]);
-    reconSheet.getRange(1, 1, 1, HEADERS.RECON_STATS.length).setFontWeight('bold');
-    reconSheet.getRange(1, 1, 1, HEADERS.RECON_STATS.length).setBackground('#9aa0a6').setFontColor('white');
-  }
+  // Reconstructed/Daily stats deprecated and removed
 }
 
 /**
@@ -339,288 +320,7 @@ function fetchGamesFromArchive(archiveUrl) {
  * - Standard time classes (bullet/blitz/rapid/daily) include only rules === 'chess'
  * - Variants (currently chess960) tracked separately, with special 'daily960'
  */
-function computeStatsAsOf(isoDateString) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const gamesSheet = ss.getSheetByName(SHEETS.GAMES);
-  const reconSheet = ss.getSheetByName(SHEETS.RECON_STATS);
-  const username = getUsername();
-  if (!gamesSheet || gamesSheet.getLastRow() < 2) {
-    SpreadsheetApp.getActive().toast('No games available to reconstruct stats.', 'Reconstruct Stats', 5);
-    return;
-  }
-
-  const asOf = new Date(isoDateString);
-  if (!(asOf instanceof Date) || isNaN(asOf.getTime())) {
-    throw new Error('Invalid date supplied. Use an ISO string like 2024-12-31T23:59:59Z');
-  }
-
-  // Read needed columns from Game Data
-  // Columns per HEADERS.GAMES (1-based):
-  // 1 url, 4 time_class, 5 rules, 6 format, 7 end_time, 8-13 players+results
-  const lastRow = gamesSheet.getLastRow();
-  const rows = gamesSheet.getRange(2, 1, lastRow - 1, HEADERS.GAMES.length).getValues();
-
-  // Accumulator structure
-  const template = () => ({ rating: '', wins: 0, losses: 0, draws: 0, games: 0, lastRating: '' });
-  const acc = {
-    bullet: template(),
-    blitz: template(),
-    rapid: template(),
-    daily: template(),
-    chess960: template(),
-    daily960: template()
-  };
-
-  function classifyBucket(rules, timeClass) {
-    const r = String(rules || '').toLowerCase();
-    const t = String(timeClass || '').toLowerCase();
-    const isStandard = r === 'chess' || r === '';
-    const is960 = r.includes('960');
-    if (isStandard) return t; // bullet/blitz/rapid/daily
-    if (is960 && t === 'daily') return 'daily960';
-    if (is960) return 'chess960';
-    return undefined; // ignore other variants for now
-  }
-
-  function coalesceResult(whiteResult, blackResult, playerIsWhite) {
-    const wr = String(whiteResult || '').toLowerCase();
-    const br = String(blackResult || '').toLowerCase();
-    const result = playerIsWhite ? wr : br;
-    if (result === 'win' || result === 'checkmated' && !playerIsWhite) return 'win';
-    if (result === 'resigned' || result === 'timeout' || result === 'lose' || result === 'checkmated' && playerIsWhite) return 'loss';
-    if (result === 'draw' || result === 'stalemate' || result === 'repetition' || result === 'agreed') return 'draw';
-    // Fallback: infer by opponent
-    const opp = playerIsWhite ? br : wr;
-    if (opp === 'win') return 'loss';
-    if (opp === 'lose') return 'win';
-    if (opp === 'draw') return 'draw';
-    return undefined;
-  }
-
-  // For rating as of date, we take the player's rating column for the side they played
-  rows.forEach((row) => {
-    const url = row[0];
-    const timeClass = row[3];
-    const rules = row[4];
-    const endTime = row[6];
-    const whiteUser = row[7];
-    const whiteRating = row[8];
-    const whiteResult = row[9];
-    const blackUser = row[10];
-    const blackRating = row[11];
-    const blackResult = row[12];
-
-    if (!endTime) return;
-    const end = endTime instanceof Date ? endTime : new Date(endTime);
-    if (!(end instanceof Date) || isNaN(end.getTime()) || end > asOf) return;
-
-    const bucket = classifyBucket(rules, timeClass);
-    if (!bucket || !acc[bucket]) return;
-
-    const playerIsWhite = String(whiteUser || '').toLowerCase() === String(username || '').toLowerCase();
-    const playerIsBlack = String(blackUser || '').toLowerCase() === String(username || '').toLowerCase();
-    if (!playerIsWhite && !playerIsBlack) return;
-
-    const result = coalesceResult(whiteResult, blackResult, playerIsWhite);
-    if (result === 'win') acc[bucket].wins += 1;
-    else if (result === 'loss') acc[bucket].losses += 1;
-    else if (result === 'draw') acc[bucket].draws += 1;
-    acc[bucket].games += 1;
-
-    const rating = playerIsWhite ? whiteRating : blackRating;
-    if (rating !== '' && rating !== null && rating !== undefined) {
-      acc[bucket].lastRating = rating; // keep last seen rating up to asOf
-    }
-  });
-
-  // Finalize ratings
-  Object.keys(acc).forEach(k => { acc[k].rating = acc[k].lastRating || ''; delete acc[k].lastRating; });
-
-  // Build output row
-  const row = [formatDateTime(asOf), username,
-    acc.bullet.rating, acc.bullet.wins, acc.bullet.losses, acc.bullet.draws, acc.bullet.games,
-    acc.blitz.rating, acc.blitz.wins, acc.blitz.losses, acc.blitz.draws, acc.blitz.games,
-    acc.rapid.rating, acc.rapid.wins, acc.rapid.losses, acc.rapid.draws, acc.rapid.games,
-    acc.daily.rating, acc.daily.wins, acc.daily.losses, acc.daily.draws, acc.daily.games,
-    acc.chess960.rating, acc.chess960.wins, acc.chess960.losses, acc.chess960.draws, acc.chess960.games,
-    acc.daily960.rating, acc.daily960.wins, acc.daily960.losses, acc.daily960.draws, acc.daily960.games
-  ];
-
-  // Insert newest on top under headers
-  if (reconSheet.getLastRow() >= 1) {
-    reconSheet.insertRows(2, 1);
-  }
-  reconSheet.getRange(2, 1, 1, HEADERS.RECON_STATS.length).setValues([row]);
-  SpreadsheetApp.getActive().toast(`Reconstructed stats as of ${formatDateTime(asOf)}`, 'Reconstruct Stats', 5);
-}
-
-/**
- * Reconstruct end-of-day stats for each day from first game to today
- */
-function reconstructDailyStatsAll() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const gamesSheet = ss.getSheetByName(SHEETS.GAMES);
-  const reconSheet = ss.getSheetByName(SHEETS.RECON_STATS);
-  const username = getUsername();
-  if (!gamesSheet || gamesSheet.getLastRow() < 2) {
-    SpreadsheetApp.getActive().toast('No games to reconstruct stats from.', 'Reconstruct Daily Stats', 5);
-    return;
-  }
-
-  // Read all games
-  const lastRow = gamesSheet.getLastRow();
-  const values = gamesSheet.getRange(2, 1, lastRow - 1, HEADERS.GAMES.length).getValues();
-
-  // Build events for games the user played in
-  const events = [];
-  values.forEach((row) => {
-    const timeClass = row[3];
-    const rules = row[4];
-    const endTime = row[6];
-    const whiteUser = row[7];
-    const whiteRating = row[8];
-    const whiteResult = row[9];
-    const blackUser = row[10];
-    const blackRating = row[11];
-    const blackResult = row[12];
-
-    if (!endTime) return;
-    const end = endTime instanceof Date ? endTime : new Date(endTime);
-    if (!(end instanceof Date) || isNaN(end.getTime())) return;
-
-    const r = String(rules || '').toLowerCase();
-    const t = String(timeClass || '').toLowerCase();
-    const isStandard = r === 'chess' || r === '';
-    const is960 = r.includes('960');
-    let bucket;
-    if (isStandard) bucket = t; else if (is960 && t === 'daily') bucket = 'daily960'; else if (is960) bucket = 'chess960';
-    if (!bucket) return;
-
-    const isWhite = String(whiteUser || '').toLowerCase() === String(username || '').toLowerCase();
-    const isBlack = String(blackUser || '').toLowerCase() === String(username || '').toLowerCase();
-    if (!isWhite && !isBlack) return;
-
-    const wr = String(whiteResult || '').toLowerCase();
-    const br = String(blackResult || '').toLowerCase();
-    const res = isWhite ? wr : br;
-    let result;
-    if (res === 'win' || (res === 'checkmated' && !isWhite)) result = 'win';
-    else if (res === 'resigned' || res === 'timeout' || res === 'lose' || (res === 'checkmated' && isWhite)) result = 'loss';
-    else if (res === 'draw' || res === 'stalemate' || res === 'repetition' || res === 'agreed') result = 'draw';
-    else {
-      const opp = isWhite ? br : wr;
-      if (opp === 'win') result = 'loss';
-      else if (opp === 'lose') result = 'win';
-      else if (opp === 'draw') result = 'draw';
-    }
-
-    const rating = isWhite ? whiteRating : blackRating;
-    events.push({ date: end, bucket, result, rating });
-  });
-
-  if (events.length === 0) {
-    SpreadsheetApp.getActive().toast('No user games found to reconstruct.', 'Reconstruct Daily Stats', 5);
-    return;
-  }
-
-  // Sort by date ascending
-  events.sort((a, b) => a.date - b.date);
-
-  // Day range
-  const start = new Date(events[0].date);
-  start.setHours(0, 0, 0, 0);
-  const today = new Date();
-  today.setHours(23, 59, 59, 999);
-
-  // Accumulators
-  const mk = () => ({ rating: '', wins: 0, losses: 0, draws: 0, games: 0 });
-  const acc = { bullet: mk(), blitz: mk(), rapid: mk(), daily: mk(), chess960: mk(), daily960: mk() };
-  // Previous day's end-of-day snapshot for delta computation
-  const prev = { bullet: mk(), blitz: mk(), rapid: mk(), daily: mk(), chess960: mk(), daily960: mk() };
-
-  // Helper to normalize a Date to a simple M/D/YYYY key
-  const dateKey = (dateObj) => `${dateObj.getMonth() + 1}/${dateObj.getDate()}/${dateObj.getFullYear()}`;
-
-  // We will rebuild the sheet entirely, so no need to read existing rows for dedup
-
-  const rowsAsc = [];
-  let idx = 0;
-  for (let day = new Date(start.getFullYear(), start.getMonth(), start.getDate(), 23, 59, 59, 999); day <= today; ) {
-    while (idx < events.length && events[idx].date <= day) {
-      const e = events[idx++];
-      const bucket = e.bucket;
-      if (!acc[bucket]) continue;
-      if (e.result === 'win') acc[bucket].wins += 1;
-      else if (e.result === 'loss') acc[bucket].losses += 1;
-      else if (e.result === 'draw') acc[bucket].draws += 1;
-      acc[bucket].games += 1;
-      if (e.rating !== '' && e.rating !== null && e.rating !== undefined) acc[bucket].rating = e.rating;
-    }
-
-    const asOfStr = formatDateTime(new Date(day));
-    const asOfKey = dateKey(day);
-    // Compute per-day deltas relative to previous day's EOD totals
-    const delta = (bucket) => ({
-      wins: acc[bucket].wins - prev[bucket].wins,
-      losses: acc[bucket].losses - prev[bucket].losses,
-      draws: acc[bucket].draws - prev[bucket].draws,
-      games: acc[bucket].games - prev[bucket].games
-    });
-    const dBullet = delta('bullet');
-    const dBlitz = delta('blitz');
-    const dRapid = delta('rapid');
-    const dDaily = delta('daily');
-    const d960 = delta('chess960');
-    const dDaily960 = delta('daily960');
-
-    rowsAsc.push([
-      asOfStr, username,
-      acc.bullet.rating, dBullet.wins, dBullet.losses, dBullet.draws, dBullet.games,
-      acc.blitz.rating, dBlitz.wins, dBlitz.losses, dBlitz.draws, dBlitz.games,
-      acc.rapid.rating, dRapid.wins, dRapid.losses, dRapid.draws, dRapid.games,
-      acc.daily.rating, dDaily.wins, dDaily.losses, dDaily.draws, dDaily.games,
-      acc.chess960.rating, d960.wins, d960.losses, d960.draws, d960.games,
-      acc.daily960.rating, dDaily960.wins, dDaily960.losses, dDaily960.draws, dDaily960.games
-    ]);
-
-    // Update previous snapshot to current EOD for next day's delta computation
-    ['bullet','blitz','rapid','daily','chess960','daily960'].forEach(b => {
-      prev[b].wins = acc[b].wins;
-      prev[b].losses = acc[b].losses;
-      prev[b].draws = acc[b].draws;
-      prev[b].games = acc[b].games;
-      prev[b].rating = acc[b].rating;
-    });
-
-    day.setDate(day.getDate() + 1);
-    day.setHours(23, 59, 59, 999);
-  }
-
-  const rowsDesc = rowsAsc.reverse();
-  // Clear existing data rows and write fresh, one row per day
-  const oldRows = Math.max(0, reconSheet.getLastRow() - 1);
-  if (oldRows > 0) {
-    reconSheet.getRange(2, 1, oldRows, HEADERS.RECON_STATS.length).clearContent();
-  }
-  if (rowsDesc.length > 0) {
-    reconSheet.getRange(2, 1, rowsDesc.length, HEADERS.RECON_STATS.length).setValues(rowsDesc);
-  }
-  SpreadsheetApp.getActive().toast(`Reconstructed ${rowsDesc.length} daily rows`, 'Reconstruct Daily Stats', 5);
-}
-
-/** Prompt for a date and compute reconstructed stats */
-function promptReconstructedStats() {
-  try {
-    const ui = SpreadsheetApp.getUi();
-    const response = ui.prompt('Reconstruct Stats', 'Enter an ISO date/time (e.g., 2024-12-31T23:59:59Z):', ui.ButtonSet.OK_CANCEL);
-    if (response.getSelectedButton() !== ui.Button.OK) return;
-    const text = response.getResponseText();
-    computeStatsAsOf(text);
-  } catch (err) {
-    // fallback to now if headless
-    computeStatsAsOf(new Date().toISOString());
-  }
-}
+// Reconstructed/Daily stats functionality removed per request
 
 /**
  * Logs execution details to the logs sheet
@@ -1088,8 +788,6 @@ function onOpen() {
       .addItem('Fetch Recent Data (3 archives)', 'fetchRecentData')
       .addItem('Fetch Latest Archive Only', 'fetchLatestArchive')
       .addItem('Fetch Player Stats', 'fetchPlayerStats')
-      .addItem('Compute Reconstructed Stats (prompt)', 'promptReconstructedStats')
-      .addItem('Reconstruct Daily Stats (all days)', 'reconstructDailyStatsAll')
       .addSeparator()
       .addItem('View Execution Logs', 'openLogsSheet')
       .addToUi();
