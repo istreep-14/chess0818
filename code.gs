@@ -1,3 +1,5 @@
+<<<<<<< cursor/fix-column-count-mismatch-4b5f
+=======
 // Chess.com Game Data Manager
 // This script manages Chess.com game data across multiple sheets
 
@@ -946,3 +948,4 @@ function openLogsSheet() {
     ss.toast('Logs sheet not found. Please run Setup Sheets first.', 'Sheet Not Found', 3);
   }
 }
+>>>>>>> main
