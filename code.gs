@@ -63,11 +63,11 @@ const HEADERS = {
  */
 function setupSheets() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  
+
   // Create Username Input sheet
   let usernameSheet = ss.getSheetByName(SHEETS.USERNAME);
   let existingUsername = '';
-  
+
   if (!usernameSheet) {
     usernameSheet = ss.insertSheet(SHEETS.USERNAME);
   } else {
@@ -77,7 +77,7 @@ function setupSheets() {
       existingUsername = currentValue;
     }
   }
-  
+
   usernameSheet.getRange('A1').setValue('Chess.com Username:');
   // Only set placeholder if no existing username
   if (!existingUsername) {
@@ -89,7 +89,7 @@ function setupSheets() {
   usernameSheet.getRange('A4').setValue('1. Enter your username in cell B1');
   usernameSheet.getRange('A5').setValue('2. Run fetchAllData() for initial load');
   usernameSheet.getRange('A6').setValue('3. Run fetchRecentData() for updates');
-  
+
   // Create Archives sheet
   let archivesSheet = ss.getSheetByName(SHEETS.ARCHIVES);
   if (!archivesSheet) {
@@ -99,7 +99,7 @@ function setupSheets() {
     archivesSheet.getRange(1, 1, 1, HEADERS.ARCHIVES.length).setValues([HEADERS.ARCHIVES]);
     archivesSheet.getRange(1, 1, 1, HEADERS.ARCHIVES.length).setFontWeight('bold');
   }
-  
+
   // Create Games sheet
   let gamesSheet = ss.getSheetByName(SHEETS.GAMES);
   if (!gamesSheet) {
@@ -109,7 +109,7 @@ function setupSheets() {
   gamesSheet.getRange(1, 1, 1, HEADERS.GAMES.length).setValues([HEADERS.GAMES]);
   gamesSheet.getRange(1, 1, 1, HEADERS.GAMES.length).setFontWeight('bold');
   gamesSheet.getRange(1, 1, 1, HEADERS.GAMES.length).setBackground('#4285f4').setFontColor('white');
-  
+
   // Create Logs sheet
   let logsSheet = ss.getSheetByName(SHEETS.LOGS);
   if (!logsSheet) {
@@ -153,12 +153,12 @@ function getUsername() {
   if (!usernameSheet) {
     throw new Error('Username sheet not found. Please run setupSheets() first.');
   }
-  
+
   const username = usernameSheet.getRange('B1').getValue().toString().trim();
   if (!username || username === 'Enter your username here') {
     throw new Error('Please enter your Chess.com username in the Username Input sheet.');
   }
-  
+
   return username;
 }
 
@@ -167,13 +167,13 @@ function getUsername() {
  */
 function fetchArchives(username) {
   const url = `https://api.chess.com/pub/player/${username}/games/archives`;
-  
+
   try {
     const response = UrlFetchApp.fetch(url);
     if (response.getResponseCode() !== 200) {
       throw new Error(`Failed to fetch archives. Response code: ${response.getResponseCode()}`);
     }
-    
+
     const data = JSON.parse(response.getContentText());
     return data.archives || [];
   } catch (error) {
@@ -280,14 +280,14 @@ function fetchPlayerStats() {
 function updateArchivesSheet(archives) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const archivesSheet = ss.getSheetByName(SHEETS.ARCHIVES);
-  
+
   // Get existing archives
   const existingData = archivesSheet.getLastRow() > 1 ? 
     archivesSheet.getRange(2, 1, archivesSheet.getLastRow() - 1, 4).getValues() : [];
-  
+
   const existingArchives = new Set(existingData.map(row => row[0]));
   const newArchives = [];
-  
+
   // Process each archive
   archives.forEach((archiveUrl, index) => {
     const urlParts = archiveUrl.split('/');
@@ -295,7 +295,7 @@ function updateArchivesSheet(archives) {
     const isLatest = index === archives.length - 1;
     const status = isLatest ? 'Active' : 'Inactive';
     const lastUpdated = new Date().toISOString().split('T')[0];
-    
+
     if (!existingArchives.has(archiveUrl)) {
       newArchives.push([archiveUrl, yearMonth, status, lastUpdated]);
     } else {
@@ -306,13 +306,13 @@ function updateArchivesSheet(archives) {
       }
     }
   });
-  
+
   // Add new archives
   if (newArchives.length > 0) {
     archivesSheet.getRange(archivesSheet.getLastRow() + 1, 1, newArchives.length, 4)
       .setValues(newArchives);
   }
-  
+
   return archives[archives.length - 1]; // Return latest archive
 }
 
@@ -325,7 +325,7 @@ function fetchGamesFromArchive(archiveUrl) {
     if (response.getResponseCode() !== 200) {
       throw new Error(`Failed to fetch games from ${archiveUrl}. Response code: ${response.getResponseCode()}`);
     }
-    
+
     const data = JSON.parse(response.getContentText());
     return data.games || [];
   } catch (error) {
@@ -604,9 +604,9 @@ function logExecution(functionName, username, status, archivesProcessed, newGame
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const logsSheet = ss.getSheetByName(SHEETS.LOGS);
-    
+
     if (!logsSheet) return;
-    
+
     const logRow = [
       new Date(),
       functionName,
@@ -619,15 +619,15 @@ function logExecution(functionName, username, status, archivesProcessed, newGame
       errors,
       notes
     ];
-    
+
     // Insert at row 2 to keep most recent logs at top
     if (logsSheet.getLastRow() > 1) {
       logsSheet.insertRows(2);
     }
-    
+
     logsSheet.getRange(logsSheet.getLastRow() > 1 ? 2 : logsSheet.getLastRow() + 1, 1, 1, HEADERS.LOGS.length)
       .setValues([logRow]);
-      
+
     // Color code status
     const statusCell = logsSheet.getRange(logsSheet.getLastRow() > 1 ? 2 : logsSheet.getLastRow(), 4);
     if (status === 'SUCCESS') {
@@ -637,7 +637,7 @@ function logExecution(functionName, username, status, archivesProcessed, newGame
     } else if (status === 'WARNING') {
       statusCell.setBackground('#fce5cd');
     }
-    
+
   } catch (error) {
     console.error('Error logging execution:', error);
   }
@@ -648,7 +648,7 @@ function logExecution(functionName, username, status, archivesProcessed, newGame
  */
 function parsePGN(pgnString) {
   if (!pgnString) return {};
-  
+
   const result = {
     event: '',
     site: '',
@@ -665,22 +665,22 @@ function parsePGN(pgnString) {
     endTime: '',
     currentPosition: ''
   };
-  
+
   try {
     const lines = pgnString.split('\n');
     let movesStarted = false;
     let movesText = '';
-    
+
     for (const line of lines) {
       const trimmedLine = line.trim();
-      
+
       if (trimmedLine.startsWith('[') && trimmedLine.endsWith(']')) {
         // Parse metadata
         const match = trimmedLine.match(/\[(\w+)\s+"([^"]+)"\]/);
         if (match) {
           const key = match[1].toLowerCase();
           const value = match[2];
-          
+
           if (key === 'event') result.event = value;
           else if (key === 'site') result.site = value;
           else if (key === 'date') result.date = value;
@@ -701,13 +701,13 @@ function parsePGN(pgnString) {
         movesText += (movesText ? ' ' : '') + trimmedLine;
       }
     }
-    
+
     result.moves = movesText.trim();
-    
+
   } catch (error) {
     console.error('Error parsing PGN:', error);
   }
-  
+
   return result;
 }
 /**
@@ -794,9 +794,9 @@ function gameToRow(game) {
 function getExistingGameUrls() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const gamesSheet = ss.getSheetByName(SHEETS.GAMES);
-  
+
   if (gamesSheet.getLastRow() <= 1) return new Set();
-  
+
   const gameUrls = gamesSheet.getRange(2, 1, gamesSheet.getLastRow() - 1, 1).getValues();
   return new Set(gameUrls.flat().filter(url => url));
 }
@@ -806,30 +806,30 @@ function getExistingGameUrls() {
  */
 function addNewGames(games) {
   if (!games || games.length === 0) return 0;
-  
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const gamesSheet = ss.getSheetByName(SHEETS.GAMES);
   const existingUrls = getExistingGameUrls();
-  
+
   // Filter out duplicates and convert to rows
   const newGameRows = games
     .filter(game => !existingUrls.has(game.url))
     .map(gameToRow)
     .reverse(); // Reverse to maintain chronological order when inserting at top
-  
+
   if (newGameRows.length === 0) {
     console.log('No new games to add (all games already exist)');
     return 0;
   }
-  
+
   // Insert new rows at the top (after headers)
   if (gamesSheet.getLastRow() > 1) {
     gamesSheet.insertRows(2, newGameRows.length);
   }
-  
+
   gamesSheet.getRange(2, 1, newGameRows.length, HEADERS.GAMES.length)
     .setValues(newGameRows);
-  
+
   console.log(`Added ${newGameRows.length} new games`);
   return newGameRows.length;
 }
@@ -843,51 +843,51 @@ function fetchAllData() {
   let archivesProcessed = 0;
   let totalGames = 0;
   let errors = '';
-  
+
   try {
     console.log('Starting initial data fetch...');
-    
+
     // Only setup sheets if they don't exist, preserve username
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     if (!ss.getSheetByName(SHEETS.USERNAME) || !ss.getSheetByName(SHEETS.ARCHIVES) || !ss.getSheetByName(SHEETS.GAMES)) {
       setupSheets();
     }
-    
+
     username = getUsername();
     console.log(`Fetching data for user: ${username}`);
-    
+
     const archives = fetchArchives(username);
     console.log(`Found ${archives.length} archives`);
-    
+
     if (archives.length === 0) {
       throw new Error('No archives found for this user');
     }
-    
+
     updateArchivesSheet(archives);
     archivesProcessed = archives.length;
-    
+
     // Fetch games from all archives
     for (let i = 0; i < archives.length; i++) {
       const archiveUrl = archives[i];
       console.log(`Fetching games from archive ${i + 1}/${archives.length}...`);
-      
+
       const games = fetchGamesFromArchive(archiveUrl);
       const newGamesCount = addNewGames(games);
       totalGames += newGamesCount;
-      
+
       // Add a small delay to be respectful to the API
       Utilities.sleep(100);
     }
-    
+
     const executionTime = Date.now() - startTime;
-    
+
     console.log(`Initial fetch complete! Added ${totalGames} total games.`);
     SpreadsheetApp.getActiveSpreadsheet().toast(
       `Successfully loaded ${totalGames} games from ${archives.length} archives`, 
       'Data Fetch Complete', 
       5
     );
-    
+
     // Log successful execution
     logExecution(
       'fetchAllData', 
@@ -900,18 +900,18 @@ function fetchAllData() {
       '',
       `Initial load completed successfully`
     );
-    
+
   } catch (error) {
     const executionTime = Date.now() - startTime;
     errors = error.message;
-    
+
     console.error('Error in fetchAllData:', error);
     SpreadsheetApp.getActiveSpreadsheet().toast(
       `Error: ${error.message}`, 
       'Fetch Failed', 
       10
     );
-    
+
     // Log failed execution
     logExecution(
       'fetchAllData', 
@@ -936,49 +936,49 @@ function fetchRecentData(archiveCount = 3) {
   let archivesProcessed = 0;
   let totalNewGames = 0;
   let errors = '';
-  
+
   try {
     console.log('Starting recent data fetch...');
-    
+
     username = getUsername();
     const archives = fetchArchives(username);
-    
+
     if (archives.length === 0) {
       throw new Error('No archives found for this user');
     }
-    
+
     updateArchivesSheet(archives);
-    
+
     // Get the last few archives
     const recentArchives = archives.slice(-Math.min(archiveCount, archives.length));
     archivesProcessed = recentArchives.length;
     console.log(`Fetching from ${recentArchives.length} most recent archives`);
-    
+
     // Get current total games for logging
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const gamesSheet = ss.getSheetByName(SHEETS.GAMES);
     const currentTotalGames = Math.max(0, gamesSheet.getLastRow() - 1);
-    
+
     for (const archiveUrl of recentArchives) {
       console.log(`Fetching recent games from: ${archiveUrl}`);
-      
+
       const games = fetchGamesFromArchive(archiveUrl);
       const newGamesCount = addNewGames(games);
       totalNewGames += newGamesCount;
-      
+
       Utilities.sleep(100);
     }
-    
+
     const executionTime = Date.now() - startTime;
     const finalTotalGames = currentTotalGames + totalNewGames;
-    
+
     console.log(`Recent fetch complete! Added ${totalNewGames} new games.`);
     SpreadsheetApp.getActiveSpreadsheet().toast(
       `Added ${totalNewGames} new games from recent archives`, 
       'Recent Update Complete', 
       5
     );
-    
+
     // Log successful execution
     logExecution(
       'fetchRecentData', 
@@ -991,18 +991,18 @@ function fetchRecentData(archiveCount = 3) {
       '',
       `Checked ${archiveCount} recent archives`
     );
-    
+
   } catch (error) {
     const executionTime = Date.now() - startTime;
     errors = error.message;
-    
+
     console.error('Error in fetchRecentData:', error);
     SpreadsheetApp.getActiveSpreadsheet().toast(
       `Error: ${error.message}`, 
       'Recent Fetch Failed', 
       10
     );
-    
+
     // Log failed execution
     logExecution(
       'fetchRecentData', 
@@ -1024,18 +1024,18 @@ function fetchRecentData(archiveCount = 3) {
 function fetchLatestArchive() {
   const startTime = Date.now();
   let username = '';
-  
+
   try {
     username = getUsername();
     fetchRecentData(1);
-    
+
     // The logging is handled in fetchRecentData, but we can add a note
     const executionTime = Date.now() - startTime;
     console.log(`Latest archive fetch completed in ${executionTime}ms`);
-    
+
   } catch (error) {
     const executionTime = Date.now() - startTime;
-    
+
     logExecution(
       'fetchLatestArchive', 
       username, 
@@ -1085,3 +1085,4 @@ function openLogsSheet() {
     ss.toast('Logs sheet not found. Please run Setup Sheets first.', 'Sheet Not Found', 3);
   }
 }
+Footer
