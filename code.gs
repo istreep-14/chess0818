@@ -280,22 +280,35 @@ function parsePGN(pgnString) {
   return result;
 }
 function gameToRow(game) {
+  const pgn = game.pgn || '';
+  const metadata = parsePGN(pgn);
   return [
+    // 1-14: Core game details and accuracies
     game.url || '',
-    game.pgn || '',
     game.time_control || '',
     game.rated || false,
     game.time_class || '',
     game.rules || '',
+    game.end_time ? new Date(game.end_time * 1000) : '',
     game.white?.username || '',
     game.white?.rating || '',
     game.white?.result || '',
     game.black?.username || '',
     game.black?.rating || '',
     game.black?.result || '',
-    game.end_time ? new Date(game.end_time * 1000) : '',
-    game.accuracies?.white || '',
-    game.accuracies?.black || ''
+    game.accuracies?.white ?? '',
+    game.accuracies?.black ?? '',
+    // 15-21: PGN-derived metadata
+    metadata.event || '',
+    metadata.site || '',
+    metadata.date || '',
+    metadata.round || '',
+    metadata.opening || '',
+    metadata.eco || '',
+    metadata.termination || '',
+    // 22-23: Full PGN and compact moves text
+    pgn,
+    metadata.moves || ''
   ];
 }
 
