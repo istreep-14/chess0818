@@ -1,5 +1,3 @@
-<<<<<<< cursor/fix-column-count-mismatch-4b5f
-=======
 // Chess.com Game Data Manager
 // This script manages Chess.com game data across multiple sheets
 
@@ -458,11 +456,16 @@ function computeStatsAsOf(isoDateString) {
 
 /** Prompt for a date and compute reconstructed stats */
 function promptReconstructedStats() {
-  const ui = SpreadsheetApp.getUi();
-  const response = ui.prompt('Reconstruct Stats', 'Enter an ISO date/time (e.g., 2024-12-31T23:59:59Z):', ui.ButtonSet.OK_CANCEL);
-  if (response.getSelectedButton() !== ui.Button.OK) return;
-  const text = response.getResponseText();
-  computeStatsAsOf(text);
+  try {
+    const ui = SpreadsheetApp.getUi();
+    const response = ui.prompt('Reconstruct Stats', 'Enter an ISO date/time (e.g., 2024-12-31T23:59:59Z):', ui.ButtonSet.OK_CANCEL);
+    if (response.getSelectedButton() !== ui.Button.OK) return;
+    const text = response.getResponseText();
+    computeStatsAsOf(text);
+  } catch (err) {
+    // fallback to now if headless
+    computeStatsAsOf(new Date().toISOString());
+  }
 }
 
 /**
@@ -922,18 +925,23 @@ function fetchLatestArchive() {
  * Menu creation function - adds custom menu to spreadsheet
  */
 function onOpen() {
-  const ui = SpreadsheetApp.getUi();
-  ui.createMenu('Chess.com Data')
-    .addItem('Setup Sheets', 'setupSheets')
-    .addSeparator()
-    .addItem('Fetch All Data (Initial)', 'fetchAllData')
-    .addItem('Fetch Recent Data (3 archives)', 'fetchRecentData')
-    .addItem('Fetch Latest Archive Only', 'fetchLatestArchive')
-    .addItem('Fetch Player Stats', 'fetchPlayerStats')
-    .addItem('Compute Reconstructed Stats (prompt)', 'promptReconstructedStats')
-    .addSeparator()
-    .addItem('View Execution Logs', 'openLogsSheet')
-    .addToUi();
+  try {
+    const ui = SpreadsheetApp.getUi();
+    ui.createMenu('Chess.com Data')
+      .addItem('Setup Sheets', 'setupSheets')
+      .addSeparator()
+      .addItem('Fetch All Data (Initial)', 'fetchAllData')
+      .addItem('Fetch Recent Data (3 archives)', 'fetchRecentData')
+      .addItem('Fetch Latest Archive Only', 'fetchLatestArchive')
+      .addItem('Fetch Player Stats', 'fetchPlayerStats')
+      .addItem('Compute Reconstructed Stats (prompt)', 'promptReconstructedStats')
+      .addItem('Reconstruct Daily Stats (all days)', 'reconstructDailyStatsAll')
+      .addSeparator()
+      .addItem('View Execution Logs', 'openLogsSheet')
+      .addToUi();
+  } catch (err) {
+    // UI not available (e.g., running from a trigger or headless context); ignore
+  }
 }
 
 /**
@@ -948,4 +956,3 @@ function openLogsSheet() {
     ss.toast('Logs sheet not found. Please run Setup Sheets first.', 'Sheet Not Found', 3);
   }
 }
->>>>>>> main
