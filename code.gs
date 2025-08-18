@@ -6,13 +6,46 @@ const SHEETS = {
   USERNAME: 'Username Input',
   ARCHIVES: 'Archives',
   GAMES: 'Game Data',
-  LOGS: 'Execution Logs'
+  LOGS: 'Execution Logs',
+  STATS: 'Player Stats'
 };
 
 const HEADERS = {
   ARCHIVES: ['Archive URL', 'Year-Month', 'Status', 'Last Updated'],
-  GAMES: ['Game URL', 'Time Control', 'Rated', 'Time Class', 'Rules', 'End Time', 'White Username', 'White Rating', 'White Result', 'Black Username', 'Black Rating', 'Black Result', 'White Accuracy', 'Black Accuracy', 'Event', 'Site', 'Date', 'Round', 'Opening', 'ECO', 'Termination', 'Full PGN', 'Moves & Times'],
-  LOGS: ['Timestamp', 'Function', 'Username', 'Status', 'Archives Processed', 'New Games Added', 'Total Games', 'Execution Time (ms)', 'Errors', 'Notes']
+  GAMES: [
+    'Game URL',
+    'Time Control',
+    'Rated',
+    'Time Class',
+    'Rules',
+    'Format',
+    'End Time',
+    'White Username',
+    'White Rating',
+    'White Result',
+    'Black Username',
+    'Black Rating',
+    'Black Result',
+    'White Accuracy',
+    'Black Accuracy',
+    'Event',
+    'Site',
+    'Date',
+    'Round',
+    'Opening',
+    'ECO',
+    'Termination',
+    'UTC Date',
+    'UTC Time',
+    'Start Time',
+    'End Date',
+    'End Time',
+    'Current Position',
+    'Full PGN',
+    'Moves & Times'
+  ],
+  LOGS: ['Timestamp', 'Function', 'Username', 'Status', 'Archives Processed', 'New Games Added', 'Total Games', 'Execution Time (ms)', 'Errors', 'Notes'],
+  STATS: ['Path', 'Value']
 };
 
 /**
@@ -62,11 +95,10 @@ function setupSheets() {
   if (!gamesSheet) {
     gamesSheet = ss.insertSheet(SHEETS.GAMES);
   }
-  if (gamesSheet.getLastRow() === 0) {
-    gamesSheet.getRange(1, 1, 1, HEADERS.GAMES.length).setValues([HEADERS.GAMES]);
-    gamesSheet.getRange(1, 1, 1, HEADERS.GAMES.length).setFontWeight('bold');
-    gamesSheet.getRange(1, 1, 1, HEADERS.GAMES.length).setBackground('#4285f4').setFontColor('white');
-  }
+  // Always ensure headers reflect the latest schema
+  gamesSheet.getRange(1, 1, 1, HEADERS.GAMES.length).setValues([HEADERS.GAMES]);
+  gamesSheet.getRange(1, 1, 1, HEADERS.GAMES.length).setFontWeight('bold');
+  gamesSheet.getRange(1, 1, 1, HEADERS.GAMES.length).setBackground('#4285f4').setFontColor('white');
   
   // Create Logs sheet
   let logsSheet = ss.getSheetByName(SHEETS.LOGS);
@@ -77,6 +109,17 @@ function setupSheets() {
     logsSheet.getRange(1, 1, 1, HEADERS.LOGS.length).setValues([HEADERS.LOGS]);
     logsSheet.getRange(1, 1, 1, HEADERS.LOGS.length).setFontWeight('bold');
     logsSheet.getRange(1, 1, 1, HEADERS.LOGS.length).setBackground('#34a853').setFontColor('white');
+  }
+
+  // Create Player Stats sheet
+  let statsSheet = ss.getSheetByName(SHEETS.STATS);
+  if (!statsSheet) {
+    statsSheet = ss.insertSheet(SHEETS.STATS);
+  }
+  if (statsSheet.getLastRow() === 0) {
+    statsSheet.getRange(1, 1, 1, HEADERS.STATS.length).setValues([HEADERS.STATS]);
+    statsSheet.getRange(1, 1, 1, HEADERS.STATS.length).setFontWeight('bold');
+    statsSheet.getRange(1, 1, 1, HEADERS.STATS.length).setBackground('#fbbc04').setFontColor('black');
   }
 }
 
@@ -116,6 +159,60 @@ function fetchArchives(username) {
     console.error('Error fetching archives:', error);
     throw new Error(`Failed to fetch archives: ${error.message}`);
   }
+}
+
+/**
+ * Fetch and write player stats to a dedicated sheet
+ */
+function fetchPlayerStats() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const username = getUsername();
+  const statsUrl = `https://api.chess.com/pub/player/${username}/stats`;
+  let data;
+  try {
+    const response = UrlFetchApp.fetch(statsUrl);
+    if (response.getResponseCode() !== 200) {
+      throw new Error(`Failed to fetch stats. Response code: ${response.getResponseCode()}`);
+    }
+    data = JSON.parse(response.getContentText());
+  } catch (error) {
+    SpreadsheetApp.getActiveSpreadsheet().toast(`Stats fetch failed: ${error.message}`, 'Stats Error', 5);
+    throw error;
+  }
+
+  // Ensure sheet and headers
+  let statsSheet = ss.getSheetByName(SHEETS.STATS);
+  if (!statsSheet) {
+    statsSheet = ss.insertSheet(SHEETS.STATS);
+  }
+  statsSheet.clear();
+  statsSheet.getRange(1, 1, 1, HEADERS.STATS.length).setValues([HEADERS.STATS]);
+  statsSheet.getRange(1, 1, 1, HEADERS.STATS.length).setFontWeight('bold');
+  statsSheet.getRange(1, 1, 1, HEADERS.STATS.length).setBackground('#fbbc04').setFontColor('black');
+
+  // Flatten JSON to path-value rows
+  const rows = [];
+  function walk(obj, pathParts) {
+    if (obj === null || obj === undefined) return;
+    const isPrimitive = ['string', 'number', 'boolean'].includes(typeof obj);
+    if (isPrimitive) {
+      rows.push([pathParts.join('.'), obj]);
+      return;
+    }
+    if (Array.isArray(obj)) {
+      obj.forEach((item, index) => walk(item, pathParts.concat([String(index)])));
+      return;
+    }
+    Object.keys(obj).forEach(key => walk(obj[key], pathParts.concat([key])));
+  }
+  walk(data, []);
+
+  if (rows.length === 0) {
+    rows.push(['info', 'No data']);
+  }
+
+  statsSheet.getRange(2, 1, rows.length, HEADERS.STATS.length).setValues(rows);
+  SpreadsheetApp.getActiveSpreadsheet().toast(`Fetched ${rows.length} stats rows for ${username}`, 'Stats Updated', 5);
 }
 
 /**
@@ -238,7 +335,13 @@ function parsePGN(pgnString) {
     opening: '',
     eco: '',
     termination: '',
-    moves: ''
+    moves: '',
+    utcDate: '',
+    utcTime: '',
+    startTime: '',
+    endDate: '',
+    endTime: '',
+    currentPosition: ''
   };
   
   try {
@@ -263,6 +366,12 @@ function parsePGN(pgnString) {
           else if (key === 'opening') result.opening = value;
           else if (key === 'eco') result.eco = value;
           else if (key === 'termination') result.termination = value;
+          else if (key === 'utcdate') result.utcDate = value;
+          else if (key === 'utctime') result.utcTime = value;
+          else if (key === 'starttime') result.startTime = value;
+          else if (key === 'enddate') result.endDate = value;
+          else if (key === 'endtime') result.endTime = value;
+          else if (key === 'currentposition') result.currentPosition = value;
         }
       } else if (trimmedLine && !trimmedLine.startsWith('[')) {
         // This is moves section
@@ -279,26 +388,49 @@ function parsePGN(pgnString) {
   
   return result;
 }
+/**
+ * Computes a normalized game format label based on rules and time class
+ */
+function computeFormat(rules, timeClass) {
+  const normalizedRules = (rules || '').toLowerCase();
+  const normalizedTimeClass = (timeClass || '').toLowerCase();
+  const isChess960 = normalizedRules.includes('960');
+  const isStandardChess = normalizedRules === 'chess' || normalizedRules === '';
+  if (isChess960 && normalizedTimeClass === 'daily') {
+    return 'daily960';
+  }
+  if (isStandardChess) {
+    return normalizedTimeClass || 'unknown';
+  }
+  return normalizedRules;
+}
 function gameToRow(game) {
   const pgn = game.pgn || '';
   const metadata = parsePGN(pgn);
+  const rules = (game.rules || '').toLowerCase();
+  const timeClass = (game.time_class || '').toLowerCase();
+  const format = computeFormat(rules, timeClass);
   return [
-    // 1-14: Core game details and accuracies
+    // 1-6
     game.url || '',
     game.time_control || '',
     game.rated || false,
     game.time_class || '',
     game.rules || '',
+    format,
+    // 7
     game.end_time ? new Date(game.end_time * 1000) : '',
+    // 8-13
     game.white?.username || '',
     game.white?.rating || '',
     game.white?.result || '',
     game.black?.username || '',
     game.black?.rating || '',
     game.black?.result || '',
+    // 14-15
     game.accuracies?.white ?? '',
     game.accuracies?.black ?? '',
-    // 15-21: PGN-derived metadata
+    // 16-22 PGN-derived metadata
     metadata.event || '',
     metadata.site || '',
     metadata.date || '',
@@ -306,7 +438,14 @@ function gameToRow(game) {
     metadata.opening || '',
     metadata.eco || '',
     metadata.termination || '',
-    // 22-23: Full PGN and compact moves text
+    // 23-28 PGN extra tags
+    metadata.utcDate || '',
+    metadata.utcTime || '',
+    metadata.startTime || '',
+    metadata.endDate || '',
+    metadata.endTime || '',
+    metadata.currentPosition || '',
+    // 29-30
     pgn,
     metadata.moves || ''
   ];
@@ -585,6 +724,7 @@ function onOpen() {
     .addItem('Fetch All Data (Initial)', 'fetchAllData')
     .addItem('Fetch Recent Data (3 archives)', 'fetchRecentData')
     .addItem('Fetch Latest Archive Only', 'fetchLatestArchive')
+    .addItem('Fetch Player Stats', 'fetchPlayerStats')
     .addSeparator()
     .addItem('View Execution Logs', 'openLogsSheet')
     .addToUi();
