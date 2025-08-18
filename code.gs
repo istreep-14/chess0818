@@ -7,7 +7,8 @@ const SHEETS = {
   ARCHIVES: 'Archives',
   GAMES: 'Game Data',
   LOGS: 'Execution Logs',
-  STATS: 'Player Stats'
+  STATS: 'Player Stats',
+  DAILY_STATS: 'Daily Stats'
 };
 
 const HEADERS = {
@@ -42,7 +43,10 @@ const HEADERS = {
     'End Time',
     'Current Position',
     'Full PGN',
-    'Moves & Times'
+    'Moves (SAN)',
+    'Clock Times',
+    'Game Duration (sec)',
+    'Move Count'
   ],
   LOGS: ['Timestamp', 'Function', 'Username', 'Status', 'Archives Processed', 'New Games Added', 'Total Games', 'Execution Time (ms)', 'Errors', 'Notes'],
   STATS: ['Pulled At']
@@ -122,7 +126,24 @@ function setupSheets() {
     statsSheet.getRange(1, 1, 1, HEADERS.STATS.length).setBackground('#fbbc04').setFontColor('black');
   }
 
-  // Reconstructed/Daily stats deprecated and removed
+  // Create/ensure Daily Stats sheet
+  let dailySheet = ss.getSheetByName(SHEETS.DAILY_STATS);
+  if (!dailySheet) {
+    dailySheet = ss.insertSheet(SHEETS.DAILY_STATS);
+  }
+  const dailyHeaders = [
+    'Date', 'Username',
+    'total.wins', 'total.losses', 'total.draws', 'total.games', 'total.ratingChange', 'total.lastRating',
+    'bullet.wins', 'bullet.losses', 'bullet.draws', 'bullet.games', 'bullet.ratingChange', 'bullet.lastRating',
+    'blitz.wins', 'blitz.losses', 'blitz.draws', 'blitz.games', 'blitz.ratingChange', 'blitz.lastRating',
+    'rapid.wins', 'rapid.losses', 'rapid.draws', 'rapid.games', 'rapid.ratingChange', 'rapid.lastRating',
+    'daily.wins', 'daily.losses', 'daily.draws', 'daily.games', 'daily.ratingChange', 'daily.lastRating',
+    'chess960.wins', 'chess960.losses', 'chess960.draws', 'chess960.games', 'chess960.ratingChange', 'chess960.lastRating',
+    'daily960.wins', 'daily960.losses', 'daily960.draws', 'daily960.games', 'daily960.ratingChange', 'daily960.lastRating'
+  ];
+  dailySheet.getRange(1, 1, 1, dailyHeaders.length).setValues([dailyHeaders]);
+  dailySheet.getRange(1, 1, 1, dailyHeaders.length).setFontWeight('bold');
+  dailySheet.getRange(1, 1, 1, dailyHeaders.length).setBackground('#9aa0a6').setFontColor('white');
 }
 
 /**
@@ -435,6 +456,101 @@ function parsePGN(pgnString) {
   
   return result;
 }
+
+/**
+ * Splits PGN moves into SAN moves and clock times
+ */
+function parseMovesAndTimes(movesText) {
+  if (!movesText) return { sanMoves: '', clockTimes: '', moveCount: 0 };
+  
+  const sanMoves = [];
+  const clockTimes = [];
+  let moveCount = 0;
+  
+  // Split by spaces and process each token
+  const tokens = movesText.split(/\s+/);
+  let currentMove = '';
+  let currentClocks = [];
+  
+  for (const token of tokens) {
+    if (token.match(/^\d+\./)) {
+      // Move number - save previous move if exists
+      if (currentMove) {
+        sanMoves.push(currentMove);
+        clockTimes.push(currentClocks.join(' '));
+        moveCount++;
+      }
+      currentMove = token;
+      currentClocks = [];
+    } else if (token.match(/^\d+\.\.\./)) {
+      // Black move number - just continue
+      currentMove += ' ' + token;
+    } else if (token.match(/^\{\[%clk\s+([^\]]+)\]\}/)) {
+      // Clock time - extract the time
+      const timeMatch = token.match(/^\{\[%clk\s+([^\]]+)\]\}/);
+      if (timeMatch) {
+        currentClocks.push(timeMatch[1]);
+      }
+    } else if (token && !token.match(/^\{.*\}$/)) {
+      // Regular move - add to current move
+      currentMove += (currentMove ? ' ' : '') + token;
+    }
+  }
+  
+  // Add the last move
+  if (currentMove) {
+    sanMoves.push(currentMove);
+    clockTimes.push(currentClocks.join(' '));
+    moveCount++;
+  }
+  
+  return {
+    sanMoves: sanMoves.join(' '),
+    clockTimes: clockTimes.join(' '),
+    moveCount: moveCount
+  };
+}
+
+/**
+ * Computes game duration in seconds from PGN start/end times
+ */
+function computeGameDuration(startTime, endTime, startDate, endDate) {
+  if (!startTime || !endTime) return '';
+  
+  try {
+    // Parse start time
+    let startDateTime;
+    if (startDate && startTime) {
+      startDateTime = new Date(`${startDate} ${startTime}`);
+    } else if (startTime) {
+      startDateTime = new Date(startTime);
+    } else {
+      return '';
+    }
+    
+    // Parse end time
+    let endDateTime;
+    if (endDate && endTime) {
+      endDateTime = new Date(`${endDate} ${endTime}`);
+    } else if (endTime) {
+      endDateTime = new Date(endTime);
+    } else {
+      return '';
+    }
+    
+    // Handle games that span midnight
+    if (endDateTime < startDateTime) {
+      endDateTime.setDate(endDateTime.getDate() + 1);
+    }
+    
+    const durationMs = endDateTime.getTime() - startDateTime.getTime();
+    return Math.round(durationMs / 1000); // Convert to seconds
+    
+  } catch (error) {
+    console.error('Error computing game duration:', error);
+    return '';
+  }
+}
 /**
  * Computes a normalized game format label based on rules and time class
  */
@@ -472,6 +588,13 @@ function gameToRow(game) {
   const rules = (game.rules || '').toLowerCase();
   const timeClass = (game.time_class || '').toLowerCase();
   const format = computeFormat(rules, timeClass);
+  
+  // Parse moves and times
+  const movesData = parseMovesAndTimes(metadata.moves);
+  
+  // Compute game duration
+  const duration = computeGameDuration(metadata.startTime, metadata.endTime, metadata.utcDate, metadata.endDate);
+  
   return [
     // 1-6
     game.url || '',
@@ -507,9 +630,12 @@ function gameToRow(game) {
     metadata.endDate || '',
     metadata.endTime || '',
     metadata.currentPosition || '',
-    // 29-30
+    // 29-33 New columns
     pgn,
-    metadata.moves || ''
+    movesData.sanMoves || '',
+    movesData.clockTimes || '',
+    duration || '',
+    movesData.moveCount || 0
   ];
 }
 
@@ -776,6 +902,167 @@ function fetchLatestArchive() {
 }
 
 /**
+ * Computes daily stats for all days with games
+ */
+function computeDailyStatsAllDays() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const gamesSheet = ss.getSheetByName(SHEETS.GAMES);
+  const dailySheet = ss.getSheetByName(SHEETS.DAILY_STATS);
+  const username = getUsername();
+  
+  if (!gamesSheet || gamesSheet.getLastRow() < 2) {
+    SpreadsheetApp.getActive().toast('No games available to compute daily stats.', 'Daily Stats', 5);
+    return;
+  }
+
+  // Read all games
+  const lastRow = gamesSheet.getLastRow();
+  const values = gamesSheet.getRange(2, 1, lastRow - 1, HEADERS.GAMES.length).getValues();
+
+  // Build events for games the user played in
+  const events = [];
+  values.forEach((row) => {
+    const timeClass = row[3];
+    const rules = row[4];
+    const endTime = row[6];
+    const whiteUser = row[7];
+    const whiteRating = row[8];
+    const whiteResult = row[9];
+    const blackUser = row[10];
+    const blackRating = row[11];
+    const blackResult = row[12];
+
+    if (!endTime) return;
+    const end = endTime instanceof Date ? endTime : new Date(endTime);
+    if (!(end instanceof Date) || isNaN(end.getTime())) return;
+
+    const r = String(rules || '').toLowerCase();
+    const t = String(timeClass || '').toLowerCase();
+    const isStandard = r === 'chess' || r === '';
+    const is960 = r.includes('960');
+    let bucket;
+    if (isStandard) bucket = t; else if (is960 && t === 'daily') bucket = 'daily960'; else if (is960) bucket = 'chess960';
+    if (!bucket) return;
+
+    const isWhite = String(whiteUser || '').toLowerCase() === String(username || '').toLowerCase();
+    const isBlack = String(blackUser || '').toLowerCase() === String(username || '').toLowerCase();
+    if (!isWhite && !isBlack) return;
+
+    const wr = String(whiteResult || '').toLowerCase();
+    const br = String(blackResult || '').toLowerCase();
+    const res = isWhite ? wr : br;
+    let result;
+    if (res === 'win' || (res === 'checkmated' && !isWhite)) result = 'win';
+    else if (res === 'resigned' || res === 'timeout' || res === 'lose' || (res === 'checkmated' && isWhite)) result = 'loss';
+    else if (res === 'draw' || res === 'stalemate' || res === 'repetition' || res === 'agreed') result = 'draw';
+    else {
+      const opp = isWhite ? br : wr;
+      if (opp === 'win') result = 'loss';
+      else if (opp === 'lose') result = 'win';
+      else if (opp === 'draw') result = 'draw';
+    }
+
+    const rating = isWhite ? whiteRating : blackRating;
+    const startRating = isWhite ? (whiteRating || 0) : (blackRating || 0);
+    events.push({ date: end, bucket, result, rating, startRating });
+  });
+
+  if (events.length === 0) {
+    SpreadsheetApp.getActive().toast('No user games found to compute daily stats.', 'Daily Stats', 5);
+    return;
+  }
+
+  // Sort by date ascending
+  events.sort((a, b) => a.date - b.date);
+
+  // Group events by date
+  const dailyEvents = {};
+  events.forEach(event => {
+    const dateKey = `${event.date.getFullYear()}-${String(event.date.getMonth() + 1).padStart(2, '0')}-${String(event.date.getDate()).padStart(2, '0')}`;
+    if (!dailyEvents[dateKey]) {
+      dailyEvents[dateKey] = [];
+    }
+    dailyEvents[dateKey].push(event);
+  });
+
+  // Compute stats for each day
+  const dailyStats = [];
+  Object.keys(dailyEvents).sort().forEach(dateKey => {
+    const dayEvents = dailyEvents[dateKey];
+    const date = new Date(dateKey);
+    
+    // Initialize accumulators
+    const mk = () => ({ wins: 0, losses: 0, draws: 0, games: 0, ratingChange: 0, lastRating: '' });
+    const acc = { 
+      total: mk(), 
+      bullet: mk(), 
+      blitz: mk(), 
+      rapid: mk(), 
+      daily: mk(), 
+      chess960: mk(), 
+      daily960: mk() 
+    };
+
+    // Process each game for this day
+    dayEvents.forEach(event => {
+      const bucket = event.bucket;
+      
+      // Update total stats
+      if (event.result === 'win') acc.total.wins += 1;
+      else if (event.result === 'loss') acc.total.losses += 1;
+      else if (event.result === 'draw') acc.total.draws += 1;
+      acc.total.games += 1;
+      
+      // Update format-specific stats
+      if (acc[bucket]) {
+        if (event.result === 'win') acc[bucket].wins += 1;
+        else if (event.result === 'loss') acc[bucket].losses += 1;
+        else if (event.result === 'draw') acc[bucket].draws += 1;
+        acc[bucket].games += 1;
+        
+        // Track rating changes (simplified - assumes rating is end rating)
+        if (event.rating && event.startRating) {
+          acc[bucket].ratingChange += (event.rating - event.startRating);
+        }
+        acc[bucket].lastRating = event.rating || acc[bucket].lastRating;
+      }
+      
+      // Update total rating change
+      if (event.rating && event.startRating) {
+        acc.total.ratingChange += (event.rating - event.startRating);
+      }
+      acc.total.lastRating = event.rating || acc.total.lastRating;
+    });
+
+    // Build row for this day
+    const row = [
+      dateKey, username,
+      acc.total.wins, acc.total.losses, acc.total.draws, acc.total.games, acc.total.ratingChange, acc.total.lastRating,
+      acc.bullet.wins, acc.bullet.losses, acc.bullet.draws, acc.bullet.games, acc.bullet.ratingChange, acc.bullet.lastRating,
+      acc.blitz.wins, acc.blitz.losses, acc.blitz.draws, acc.blitz.games, acc.blitz.ratingChange, acc.blitz.lastRating,
+      acc.rapid.wins, acc.rapid.losses, acc.rapid.draws, acc.rapid.games, acc.rapid.ratingChange, acc.rapid.lastRating,
+      acc.daily.wins, acc.daily.losses, acc.daily.draws, acc.daily.games, acc.daily.ratingChange, acc.daily.lastRating,
+      acc.chess960.wins, acc.chess960.losses, acc.chess960.draws, acc.chess960.games, acc.chess960.ratingChange, acc.chess960.lastRating,
+      acc.daily960.wins, acc.daily960.losses, acc.daily960.draws, acc.daily960.games, acc.daily960.ratingChange, acc.daily960.lastRating
+    ];
+    
+    dailyStats.push(row);
+  });
+
+  // Clear existing data and write new stats
+  const oldRows = Math.max(0, dailySheet.getLastRow() - 1);
+  if (oldRows > 0) {
+    dailySheet.getRange(2, 1, oldRows, dailySheet.getLastColumn()).clearContent();
+  }
+  
+  if (dailyStats.length > 0) {
+    dailySheet.getRange(2, 1, dailyStats.length, dailyStats[0].length).setValues(dailyStats);
+  }
+  
+  SpreadsheetApp.getActive().toast(`Computed daily stats for ${dailyStats.length} days`, 'Daily Stats', 5);
+}
+
+/**
  * Menu creation function - adds custom menu to spreadsheet
  */
 function onOpen() {
@@ -788,6 +1075,8 @@ function onOpen() {
       .addItem('Fetch Recent Data (3 archives)', 'fetchRecentData')
       .addItem('Fetch Latest Archive Only', 'fetchLatestArchive')
       .addItem('Fetch Player Stats', 'fetchPlayerStats')
+      .addSeparator()
+      .addItem('Compute Daily Stats', 'computeDailyStatsAllDays')
       .addSeparator()
       .addItem('View Execution Logs', 'openLogsSheet')
       .addToUi();
