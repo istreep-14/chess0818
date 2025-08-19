@@ -7,8 +7,7 @@ const SHEETS = {
   ARCHIVES: 'Archives',
   GAMES: 'Game Data',
   LOGS: 'Execution Logs',
-  STATS: 'Player Stats',
-  DAILY_STATS: 'Daily Stats'
+  STATS: 'Player Stats'
 };
 
 const HEADERS = {
@@ -16,19 +15,20 @@ const HEADERS = {
   GAMES: [
     'Game URL',
     'Time Control',
+    'Base Time (min)',
+    'Increment (sec)',
     'Rated',
     'Time Class',
     'Rules',
     'Format',
     'End Time',
-    'White Username',
-    'White Rating',
-    'White Result',
-    'Black Username',
-    'Black Rating',
-    'Black Result',
-    'White Accuracy',
-    'Black Accuracy',
+    'Game Duration (sec)',
+    'My Rating',
+    'My Color',
+    'Opponent',
+    'Opponent Rating',
+    'Result',
+    'Termination',
     'Event',
     'Site',
     'Date',
@@ -36,20 +36,13 @@ const HEADERS = {
     'Opening',
     'ECO',
     'ECO URL',
-    'Termination',
     'UTC Date',
     'UTC Time',
     'Start Time',
     'End Date',
     'End Time',
     'Current Position',
-    'Full PGN',
-    'Moves (SAN)',
-    'Clock Times',
-    'Moves Array',
-    'Times Array',
-    'Game Duration (sec)',
-    'Move Count'
+    'Full PGN'
   ],
   LOGS: ['Timestamp', 'Function', 'Username', 'Status', 'Archives Processed', 'New Games Added', 'Total Games', 'Execution Time (ms)', 'Errors', 'Notes'],
   STATS: ['Pulled At']
@@ -128,25 +121,6 @@ function setupSheets() {
     statsSheet.getRange(1, 1, 1, HEADERS.STATS.length).setFontWeight('bold');
     statsSheet.getRange(1, 1, 1, HEADERS.STATS.length).setBackground('#fbbc04').setFontColor('black');
   }
-
-  // Create/ensure Daily Stats sheet
-  let dailySheet = ss.getSheetByName(SHEETS.DAILY_STATS);
-  if (!dailySheet) {
-    dailySheet = ss.insertSheet(SHEETS.DAILY_STATS);
-  }
-  const dailyHeaders = [
-    'Date', 'Username',
-    'total.wins', 'total.losses', 'total.draws', 'total.games', 'total.ratingChange', 'total.lastRating',
-    'bullet.wins', 'bullet.losses', 'bullet.draws', 'bullet.games', 'bullet.ratingChange', 'bullet.lastRating',
-    'blitz.wins', 'blitz.losses', 'blitz.draws', 'blitz.games', 'blitz.ratingChange', 'blitz.lastRating',
-    'rapid.wins', 'rapid.losses', 'rapid.draws', 'rapid.games', 'rapid.ratingChange', 'rapid.lastRating',
-    'daily.wins', 'daily.losses', 'daily.draws', 'daily.games', 'daily.ratingChange', 'daily.lastRating',
-    'chess960.wins', 'chess960.losses', 'chess960.draws', 'chess960.games', 'chess960.ratingChange', 'chess960.lastRating',
-    'daily960.wins', 'daily960.losses', 'daily960.draws', 'daily960.games', 'daily960.ratingChange', 'daily960.lastRating'
-  ];
-  dailySheet.getRange(1, 1, 1, dailyHeaders.length).setValues([dailyHeaders]);
-  dailySheet.getRange(1, 1, 1, dailyHeaders.length).setFontWeight('bold');
-  dailySheet.getRange(1, 1, 1, dailyHeaders.length).setBackground('#9aa0a6').setFontColor('white');
 }
 
 /**
@@ -386,7 +360,41 @@ function logExecution(functionName, username, status, archivesProcessed, newGame
 }
 
 /**
- * Parses PGN string to extract metadata and moves
+ * Parses time control string to extract base time and increment
+ */
+function parseTimeControl(timeControl) {
+  if (!timeControl) return { baseTime: '', increment: '' };
+  
+  try {
+    // Time control format is typically "baseTime+increment" (in seconds)
+    // Examples: "180+2", "600+0", "86400" (daily games)
+    const timeStr = String(timeControl);
+    
+    if (timeStr.includes('+')) {
+      const parts = timeStr.split('+');
+      const baseSeconds = parseInt(parts[0]) || 0;
+      const incrementSeconds = parseInt(parts[1]) || 0;
+      
+      return {
+        baseTime: baseSeconds / 60, // Convert seconds to minutes
+        increment: incrementSeconds
+      };
+    } else {
+      // No increment specified (like daily games)
+      const baseSeconds = parseInt(timeStr) || 0;
+      return {
+        baseTime: baseSeconds / 60, // Always convert seconds to minutes
+        increment: 0
+      };
+    }
+  } catch (error) {
+    console.error('Error parsing time control:', error);
+    return { baseTime: '', increment: '' };
+  }
+}
+
+/**
+ * Parses PGN string to extract metadata
  */
 function parsePGN(pgnString) {
   if (!pgnString) return {};
@@ -400,7 +408,6 @@ function parsePGN(pgnString) {
     eco: '',
     ecoUrl: '',
     termination: '',
-    moves: '',
     utcDate: '',
     utcTime: '',
     startTime: '',
@@ -411,8 +418,6 @@ function parsePGN(pgnString) {
   
   try {
     const lines = pgnString.split('\n');
-    let movesStarted = false;
-    let movesText = '';
     
     for (const line of lines) {
       const trimmedLine = line.trim();
@@ -439,127 +444,14 @@ function parsePGN(pgnString) {
           else if (key === 'endtime') result.endTime = value;
           else if (key === 'currentposition') result.currentPosition = value;
         }
-      } else if (trimmedLine && !trimmedLine.startsWith('[')) {
-        // This is moves section
-        movesStarted = true;
-        movesText += (movesText ? ' ' : '') + trimmedLine;
       }
     }
-    
-    result.moves = movesText.trim();
     
   } catch (error) {
     console.error('Error parsing PGN:', error);
   }
   
   return result;
-}
-
-/**
- * Splits PGN moves into SAN moves and clock times, plus structured arrays
- */
-function parseMovesAndTimes(movesText) {
-  if (!movesText) return { 
-    sanMoves: '', 
-    clockTimes: '', 
-    moveCount: 0, 
-    movesArray: '', 
-    timesArray: '' 
-  };
-  
-  const sanMoves = [];
-  const clockTimes = [];
-  const movesArray = [];
-  const timesArray = [];
-  let moveCount = 0;
-  
-  // Split by spaces and process each token
-  const tokens = movesText.split(/\s+/);
-  let i = 0;
-  
-  while (i < tokens.length) {
-    const token = tokens[i];
-    
-    // Check if this is a move number (like "1." or "15.")
-    if (token.match(/^\d+\.$/)) {
-      // This is a white move number, next token should be the white move
-      i++;
-      if (i < tokens.length) {
-        const whiteMove = tokens[i];
-        if (!whiteMove.match(/^\{.*\}$/)) { // Not a comment
-          movesArray.push(whiteMove);
-          sanMoves.push(`${token} ${whiteMove}`);
-          
-          // Look for clock time after the move
-          i++;
-          if (i < tokens.length && tokens[i].match(/^\{\[%clk\s+([^\]]+)\]\}$/)) {
-            const timeMatch = tokens[i].match(/^\{\[%clk\s+([^\]]+)\]\}$/);
-            if (timeMatch) {
-              timesArray.push(timeMatch[1]);
-              clockTimes.push(timeMatch[1]);
-            }
-          } else {
-            i--; // Back up if no clock time found
-          }
-          moveCount++;
-        }
-      }
-    }
-    // Check if this is a black move number (like "1...")
-    else if (token.match(/^\d+\.\.\.$/)) {
-      // This is a black move number, next token should be the black move
-      i++;
-      if (i < tokens.length) {
-        const blackMove = tokens[i];
-        if (!blackMove.match(/^\{.*\}$/)) { // Not a comment
-          movesArray.push(blackMove);
-          sanMoves.push(`${token} ${blackMove}`);
-          
-          // Look for clock time after the move
-          i++;
-          if (i < tokens.length && tokens[i].match(/^\{\[%clk\s+([^\]]+)\]\}$/)) {
-            const timeMatch = tokens[i].match(/^\{\[%clk\s+([^\]]+)\]\}$/);
-            if (timeMatch) {
-              timesArray.push(timeMatch[1]);
-              clockTimes.push(timeMatch[1]);
-            }
-          } else {
-            i--; // Back up if no clock time found
-          }
-          moveCount++;
-        }
-      }
-    }
-    // Check if this is just a move without number (fallback parsing)
-    else if (token && !token.match(/^\{.*\}$/) && !token.match(/^\d+\./) && token.length > 0) {
-      // This might be a move without proper numbering
-      movesArray.push(token);
-      sanMoves.push(token);
-      
-      // Look for clock time after the move
-      i++;
-      if (i < tokens.length && tokens[i].match(/^\{\[%clk\s+([^\]]+)\]\}$/)) {
-        const timeMatch = tokens[i].match(/^\{\[%clk\s+([^\]]+)\]\}$/);
-        if (timeMatch) {
-          timesArray.push(timeMatch[1]);
-          clockTimes.push(timeMatch[1]);
-        }
-      } else {
-        i--; // Back up if no clock time found
-      }
-      moveCount++;
-    }
-    
-    i++;
-  }
-  
-  return {
-    sanMoves: sanMoves.join(' '),
-    clockTimes: clockTimes.join(' '),
-    moveCount: moveCount,
-    movesArray: JSON.stringify(movesArray),
-    timesArray: JSON.stringify(timesArray)
-  };
 }
 
 /**
@@ -635,40 +527,105 @@ function formatDateTime(dateObj) {
   return `${m}/${d}/${y} ${hh}:${mm}:${ss}`;
 }
 
-function gameToRow(game) {
+/**
+ * Determines player perspective data from game
+ */
+function getPlayerPerspective(game, username) {
+  const usernameLower = username.toLowerCase();
+  const whiteUser = String(game.white?.username || '').toLowerCase();
+  const blackUser = String(game.black?.username || '').toLowerCase();
+  
+  const isWhite = whiteUser === usernameLower;
+  const isBlack = blackUser === usernameLower;
+  
+  if (!isWhite && !isBlack) {
+    // User not in this game - shouldn't happen but handle gracefully
+    return {
+      myRating: '',
+      myColor: '',
+      opponent: '',
+      opponentRating: '',
+      result: '',
+      termination: ''
+    };
+  }
+  
+  const myColor = isWhite ? 'White' : 'Black';
+  const myRating = isWhite ? (game.white?.rating || '') : (game.black?.rating || '');
+  const opponent = isWhite ? (game.black?.username || '') : (game.white?.username || '');
+  const opponentRating = isWhite ? (game.black?.rating || '') : (game.white?.rating || '');
+  
+  // Determine result from my perspective
+  const myResult = isWhite ? (game.white?.result || '') : (game.black?.result || '');
+  const opponentResult = isWhite ? (game.black?.result || '') : (game.white?.result || '');
+  
+  let result = '';
+  let termination = '';
+  
+  // Parse result
+  const myResultLower = String(myResult).toLowerCase();
+  const opponentResultLower = String(opponentResult).toLowerCase();
+  
+  if (myResultLower === 'win') {
+    result = 'Win';
+    termination = opponentResultLower;
+  } else if (myResultLower === 'checkmated' || myResultLower === 'resigned' || myResultLower === 'timeout') {
+    result = 'Loss';
+    termination = myResultLower;
+  } else {
+    // For any result that's not explicitly win or loss, consider it a draw
+    result = 'Draw';
+    termination = myResultLower || opponentResultLower || 'draw';
+  }
+  
+  return {
+    myRating,
+    myColor,
+    opponent,
+    opponentRating,
+    result,
+    termination
+  };
+}
+
+function gameToRow(game, username) {
   const pgn = game.pgn || '';
   const metadata = parsePGN(pgn);
   const rules = (game.rules || '').toLowerCase();
   const timeClass = (game.time_class || '').toLowerCase();
   const format = computeFormat(rules, timeClass);
   
-  // Parse moves and times
-  const movesData = parseMovesAndTimes(metadata.moves);
+  // Parse time control
+  const timeControlData = parseTimeControl(game.time_control);
+  
+  // Get player perspective
+  const playerData = getPlayerPerspective(game, username);
   
   // Compute game duration
   const duration = computeGameDuration(metadata.startTime, metadata.endTime, metadata.utcDate, metadata.endDate);
   
   return [
-    // 1-6
+    // Basic game info
     game.url || '',
     game.time_control || '',
+    timeControlData.baseTime,
+    timeControlData.increment,
     game.rated || false,
     game.time_class || '',
     game.rules || '',
     format,
-    // 7
     game.end_time ? new Date(game.end_time * 1000) : '',
-    // 8-13
-    game.white?.username || '',
-    game.white?.rating || '',
-    game.white?.result || '',
-    game.black?.username || '',
-    game.black?.rating || '',
-    game.black?.result || '',
-    // 14-15
-    game.accuracies?.white ?? '',
-    game.accuracies?.black ?? '',
-    // 16-23 PGN-derived metadata (added ECO URL)
+    duration || '',
+    
+    // Player perspective data
+    playerData.myRating,
+    playerData.myColor,
+    playerData.opponent,
+    playerData.opponentRating,
+    playerData.result,
+    playerData.termination,
+    
+    // PGN-derived metadata
     metadata.event || '',
     metadata.site || '',
     metadata.date || '',
@@ -676,22 +633,13 @@ function gameToRow(game) {
     metadata.opening || '',
     metadata.eco || '',
     metadata.ecoUrl || '',
-    metadata.termination || '',
-    // 24-29 PGN extra tags
     metadata.utcDate || '',
     metadata.utcTime || '',
     metadata.startTime || '',
     metadata.endDate || '',
     metadata.endTime || '',
     metadata.currentPosition || '',
-    // 30-35 PGN and moves data (added structured arrays)
-    pgn,
-    movesData.sanMoves || '',
-    movesData.clockTimes || '',
-    movesData.movesArray || '',
-    movesData.timesArray || '',
-    duration || '',
-    movesData.moveCount || 0
+    pgn
   ];
 }
 
@@ -711,7 +659,7 @@ function getExistingGameUrls() {
 /**
  * Adds new games to the top of the games sheet (avoiding duplicates)
  */
-function addNewGames(games) {
+function addNewGames(games, username) {
   if (!games || games.length === 0) return 0;
   
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -721,7 +669,7 @@ function addNewGames(games) {
   // Filter out duplicates and convert to rows
   const newGameRows = games
     .filter(game => !existingUrls.has(game.url))
-    .map(gameToRow)
+    .map(game => gameToRow(game, username))
     .reverse(); // Reverse to maintain chronological order when inserting at top
   
   if (newGameRows.length === 0) {
@@ -779,7 +727,7 @@ function fetchAllData() {
       console.log(`Fetching games from archive ${i + 1}/${archives.length}...`);
       
       const games = fetchGamesFromArchive(archiveUrl);
-      const newGamesCount = addNewGames(games);
+      const newGamesCount = addNewGames(games, username);
       totalGames += newGamesCount;
       
       // Add a small delay to be respectful to the API
@@ -870,7 +818,7 @@ function fetchRecentData(archiveCount = 3) {
       console.log(`Fetching recent games from: ${archiveUrl}`);
       
       const games = fetchGamesFromArchive(archiveUrl);
-      const newGamesCount = addNewGames(games);
+      const newGamesCount = addNewGames(games, username);
       totalNewGames += newGamesCount;
       
       Utilities.sleep(100);
@@ -958,167 +906,6 @@ function fetchLatestArchive() {
 }
 
 /**
- * Computes daily stats for all days with games
- */
-function computeDailyStatsAllDays() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const gamesSheet = ss.getSheetByName(SHEETS.GAMES);
-  const dailySheet = ss.getSheetByName(SHEETS.DAILY_STATS);
-  const username = getUsername();
-  
-  if (!gamesSheet || gamesSheet.getLastRow() < 2) {
-    SpreadsheetApp.getActive().toast('No games available to compute daily stats.', 'Daily Stats', 5);
-    return;
-  }
-
-  // Read all games
-  const lastRow = gamesSheet.getLastRow();
-  const values = gamesSheet.getRange(2, 1, lastRow - 1, HEADERS.GAMES.length).getValues();
-
-  // Build events for games the user played in
-  const events = [];
-  values.forEach((row) => {
-    const timeClass = row[3];
-    const rules = row[4];
-    const endTime = row[6];
-    const whiteUser = row[7];
-    const whiteRating = row[8];
-    const whiteResult = row[9];
-    const blackUser = row[10];
-    const blackRating = row[11];
-    const blackResult = row[12];
-
-    if (!endTime) return;
-    const end = endTime instanceof Date ? endTime : new Date(endTime);
-    if (!(end instanceof Date) || isNaN(end.getTime())) return;
-
-    const r = String(rules || '').toLowerCase();
-    const t = String(timeClass || '').toLowerCase();
-    const isStandard = r === 'chess' || r === '';
-    const is960 = r.includes('960');
-    let bucket;
-    if (isStandard) bucket = t; else if (is960 && t === 'daily') bucket = 'daily960'; else if (is960) bucket = 'chess960';
-    if (!bucket) return;
-
-    const isWhite = String(whiteUser || '').toLowerCase() === String(username || '').toLowerCase();
-    const isBlack = String(blackUser || '').toLowerCase() === String(username || '').toLowerCase();
-    if (!isWhite && !isBlack) return;
-
-    const wr = String(whiteResult || '').toLowerCase();
-    const br = String(blackResult || '').toLowerCase();
-    const res = isWhite ? wr : br;
-    let result;
-    if (res === 'win' || (res === 'checkmated' && !isWhite)) result = 'win';
-    else if (res === 'resigned' || res === 'timeout' || res === 'lose' || (res === 'checkmated' && isWhite)) result = 'loss';
-    else if (res === 'draw' || res === 'stalemate' || res === 'repetition' || res === 'agreed') result = 'draw';
-    else {
-      const opp = isWhite ? br : wr;
-      if (opp === 'win') result = 'loss';
-      else if (opp === 'lose') result = 'win';
-      else if (opp === 'draw') result = 'draw';
-    }
-
-    const rating = isWhite ? whiteRating : blackRating;
-    const startRating = isWhite ? (whiteRating || 0) : (blackRating || 0);
-    events.push({ date: end, bucket, result, rating, startRating });
-  });
-
-  if (events.length === 0) {
-    SpreadsheetApp.getActive().toast('No user games found to compute daily stats.', 'Daily Stats', 5);
-    return;
-  }
-
-  // Sort by date ascending
-  events.sort((a, b) => a.date - b.date);
-
-  // Group events by date
-  const dailyEvents = {};
-  events.forEach(event => {
-    const dateKey = `${event.date.getFullYear()}-${String(event.date.getMonth() + 1).padStart(2, '0')}-${String(event.date.getDate()).padStart(2, '0')}`;
-    if (!dailyEvents[dateKey]) {
-      dailyEvents[dateKey] = [];
-    }
-    dailyEvents[dateKey].push(event);
-  });
-
-  // Compute stats for each day
-  const dailyStats = [];
-  Object.keys(dailyEvents).sort().forEach(dateKey => {
-    const dayEvents = dailyEvents[dateKey];
-    const date = new Date(dateKey);
-    
-    // Initialize accumulators
-    const mk = () => ({ wins: 0, losses: 0, draws: 0, games: 0, ratingChange: 0, lastRating: '' });
-    const acc = { 
-      total: mk(), 
-      bullet: mk(), 
-      blitz: mk(), 
-      rapid: mk(), 
-      daily: mk(), 
-      chess960: mk(), 
-      daily960: mk() 
-    };
-
-    // Process each game for this day
-    dayEvents.forEach(event => {
-      const bucket = event.bucket;
-      
-      // Update total stats
-      if (event.result === 'win') acc.total.wins += 1;
-      else if (event.result === 'loss') acc.total.losses += 1;
-      else if (event.result === 'draw') acc.total.draws += 1;
-      acc.total.games += 1;
-      
-      // Update format-specific stats
-      if (acc[bucket]) {
-        if (event.result === 'win') acc[bucket].wins += 1;
-        else if (event.result === 'loss') acc[bucket].losses += 1;
-        else if (event.result === 'draw') acc[bucket].draws += 1;
-        acc[bucket].games += 1;
-        
-        // Track rating changes (simplified - assumes rating is end rating)
-        if (event.rating && event.startRating) {
-          acc[bucket].ratingChange += (event.rating - event.startRating);
-        }
-        acc[bucket].lastRating = event.rating || acc[bucket].lastRating;
-      }
-      
-      // Update total rating change
-      if (event.rating && event.startRating) {
-        acc.total.ratingChange += (event.rating - event.startRating);
-      }
-      acc.total.lastRating = event.rating || acc.total.lastRating;
-    });
-
-    // Build row for this day
-    const row = [
-      dateKey, username,
-      acc.total.wins, acc.total.losses, acc.total.draws, acc.total.games, acc.total.ratingChange, acc.total.lastRating,
-      acc.bullet.wins, acc.bullet.losses, acc.bullet.draws, acc.bullet.games, acc.bullet.ratingChange, acc.bullet.lastRating,
-      acc.blitz.wins, acc.blitz.losses, acc.blitz.draws, acc.blitz.games, acc.blitz.ratingChange, acc.blitz.lastRating,
-      acc.rapid.wins, acc.rapid.losses, acc.rapid.draws, acc.rapid.games, acc.rapid.ratingChange, acc.rapid.lastRating,
-      acc.daily.wins, acc.daily.losses, acc.daily.draws, acc.daily.games, acc.daily.ratingChange, acc.daily.lastRating,
-      acc.chess960.wins, acc.chess960.losses, acc.chess960.draws, acc.chess960.games, acc.chess960.ratingChange, acc.chess960.lastRating,
-      acc.daily960.wins, acc.daily960.losses, acc.daily960.draws, acc.daily960.games, acc.daily960.ratingChange, acc.daily960.lastRating
-    ];
-    
-    dailyStats.push(row);
-  });
-
-  // Clear existing data and write new stats
-  const oldRows = Math.max(0, dailySheet.getLastRow() - 1);
-  if (oldRows > 0) {
-    dailySheet.getRange(2, 1, oldRows, dailySheet.getLastColumn()).clearContent();
-  }
-  
-  if (dailyStats.length > 0) {
-    dailySheet.getRange(2, 1, dailyStats.length, dailyStats[0].length).setValues(dailyStats);
-  }
-  
-  SpreadsheetApp.getActive().toast(`Computed daily stats for ${dailyStats.length} days`, 'Daily Stats', 5);
-}
-
-/**
  * Menu creation function - adds custom menu to spreadsheet
  */
 function onOpen() {
@@ -1131,8 +918,6 @@ function onOpen() {
       .addItem('Fetch Recent Data (3 archives)', 'fetchRecentData')
       .addItem('Fetch Latest Archive Only', 'fetchLatestArchive')
       .addItem('Fetch Player Stats', 'fetchPlayerStats')
-      .addSeparator()
-      .addItem('Compute Daily Stats', 'computeDailyStatsAllDays')
       .addSeparator()
       .addItem('View Execution Logs', 'openLogsSheet')
       .addToUi();
