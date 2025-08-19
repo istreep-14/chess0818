@@ -45,7 +45,7 @@ const HEADERS = {
     'Full PGN'
   ],
   LOGS: ['Timestamp', 'Function', 'Username', 'Status', 'Archives Processed', 'New Games Added', 'Total Games', 'Execution Time (ms)', 'Errors', 'Notes'],
-  STATS: ['Pulled At']
+  STATS: ['Pulled At'] // Dynamic headers will be added based on API response
 };
 
 /**
@@ -162,6 +162,33 @@ function fetchArchives(username) {
 }
 
 /**
+ * Calculate rating changes by comparing current ratings with previous entry
+ */
+function calculateRatingChanges(currentData, previousData, headers) {
+  const changes = {};
+  
+  // Find rating columns that end with '.rating'
+  const ratingColumns = headers.filter(header => 
+    header.toLowerCase().includes('rating') && 
+    !header.toLowerCase().includes('change')
+  );
+  
+  for (const ratingCol of ratingColumns) {
+    const currentRating = parseFloat(currentData[ratingCol]) || 0;
+    const previousRating = parseFloat(previousData[ratingCol]) || 0;
+    
+    // Calculate change as: current - previous (positive = rating increase)
+    const change = currentRating - previousRating;
+    
+    // Create change column name
+    const changeCol = ratingCol.replace('.rating', '.rating_change');
+    changes[changeCol] = previousRating > 0 ? change : ''; // Only show change if there was a previous rating
+  }
+  
+  return changes;
+}
+
+/**
  * Fetch and write player stats to a dedicated sheet
  */
 function fetchPlayerStats() {
@@ -169,6 +196,7 @@ function fetchPlayerStats() {
   const username = getUsername();
   const statsUrl = `https://api.chess.com/pub/player/${username}/stats`;
   let data;
+  
   try {
     const response = UrlFetchApp.fetch(statsUrl);
     if (response.getResponseCode() !== 200) {
@@ -180,7 +208,7 @@ function fetchPlayerStats() {
     throw error;
   }
 
-  // Ensure sheet
+  // Ensure sheet exists
   let statsSheet = ss.getSheetByName(SHEETS.STATS);
   if (!statsSheet) {
     statsSheet = ss.insertSheet(SHEETS.STATS);
@@ -220,15 +248,41 @@ function fetchPlayerStats() {
   }
   flatten(converted, []);
 
-  // Build dynamic headers (Pulled At + sorted keys) and insert newest row at top
+  // Get previous data for rating change calculations
+  let previousData = {};
+  const existingLastRow = statsSheet.getLastRow();
+  if (existingLastRow >= 2) {
+    // Get the most recent entry (row 2, since newest is at top)
+    const previousRowRange = statsSheet.getRange(2, 1, 1, statsSheet.getLastColumn());
+    const previousValues = previousRowRange.getValues()[0];
+    const existingHeaders = statsSheet.getRange(1, 1, 1, statsSheet.getLastColumn()).getValues()[0];
+    
+    // Map previous values to headers
+    existingHeaders.forEach((header, index) => {
+      previousData[header] = previousValues[index];
+    });
+  }
+
+  // Build dynamic headers (Pulled At + sorted keys + rating change columns)
   const pulledAt = new Date();
   const keys = Object.keys(flat).sort();
-  const headers = ['Pulled At'].concat(keys);
+  
+  // Add rating change columns
+  const ratingKeys = keys.filter(key => key.toLowerCase().includes('rating'));
+  const changeKeys = ratingKeys.map(key => key.replace('.rating', '.rating_change'));
+  
+  const headers = ['Pulled At'].concat(keys).concat(changeKeys);
+
+  // Calculate rating changes if we have previous data
+  let ratingChanges = {};
+  if (Object.keys(previousData).length > 0) {
+    ratingChanges = calculateRatingChanges(flat, previousData, keys);
+  }
 
   // If no headers or header mismatch, rewrite header row
-  const existingLastRow = statsSheet.getLastRow();
-  const existingLastCol = statsSheet.getLastColumn();
-  const needHeaders = existingLastRow === 0 || existingLastCol === 0 || statsSheet.getRange(1, 1, 1, existingLastCol).getValues()[0].join('\u0001') !== headers.join('\u0001');
+  const needHeaders = existingLastRow === 0 || statsSheet.getLastColumn() === 0 || 
+    statsSheet.getRange(1, 1, 1, statsSheet.getLastColumn()).getValues()[0].join('\u0001') !== headers.join('\u0001');
+    
   if (needHeaders) {
     statsSheet.clear();
     statsSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
@@ -238,18 +292,44 @@ function fetchPlayerStats() {
 
   // Build row values in header order
   const row = [formatDateTime(pulledAt)];
-  for (const key of headers.slice(1)) {
+  
+  // Add main data values
+  for (const key of keys) {
     row.push(flat[key] !== undefined ? flat[key] : '');
+  }
+  
+  // Add rating change values
+  for (const changeKey of changeKeys) {
+    row.push(ratingChanges[changeKey] !== undefined ? ratingChanges[changeKey] : '');
   }
 
   // Insert a new row at position 2 (newest on top)
   if (statsSheet.getLastRow() >= 1) {
     statsSheet.insertRows(2, 1);
     statsSheet.getRange(2, 1, 1, headers.length).setValues([row]);
+    
+    // Apply conditional formatting to rating change columns
+    const changeColumnStart = keys.length + 2; // +2 for "Pulled At" and 1-indexed
+    if (changeKeys.length > 0) {
+      const changeRange = statsSheet.getRange(2, changeColumnStart, 1, changeKeys.length);
+      
+      // Color positive changes green, negative red
+      changeRange.getValues()[0].forEach((value, index) => {
+        if (value !== '' && !isNaN(value)) {
+          const cellRange = statsSheet.getRange(2, changeColumnStart + index);
+          if (value > 0) {
+            cellRange.setBackground('#d9ead3').setFontColor('#0d5016'); // Light green background, dark green text
+          } else if (value < 0) {
+            cellRange.setBackground('#f4c7c3').setFontColor('#cc0000'); // Light red background, dark red text
+          }
+        }
+      });
+    }
   } else {
     // Should not happen due to header creation, but safe fallback
     statsSheet.getRange(2, 1, 1, headers.length).setValues([row]);
   }
+  
   SpreadsheetApp.getActiveSpreadsheet().toast(`Stats pulled at ${formatDateTime(pulledAt)} for ${username}`, 'Stats Updated', 5);
 }
 
