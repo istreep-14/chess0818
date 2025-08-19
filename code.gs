@@ -35,6 +35,7 @@ const HEADERS = {
     'Round',
     'Opening',
     'ECO',
+    'ECO URL',
     'Termination',
     'UTC Date',
     'UTC Time',
@@ -45,6 +46,8 @@ const HEADERS = {
     'Full PGN',
     'Moves (SAN)',
     'Clock Times',
+    'Moves Array',
+    'Times Array',
     'Game Duration (sec)',
     'Move Count'
   ],
@@ -337,13 +340,6 @@ function fetchGamesFromArchive(archiveUrl) {
 }
 
 /**
- * Compute reconstructed stats as of a given ISO date string
- * - Standard time classes (bullet/blitz/rapid/daily) include only rules === 'chess'
- * - Variants (currently chess960) tracked separately, with special 'daily960'
- */
-// Reconstructed/Daily stats functionality removed per request
-
-/**
  * Logs execution details to the logs sheet
  */
 function logExecution(functionName, username, status, archivesProcessed, newGamesAdded, totalGames, executionTime, errors = '', notes = '') {
@@ -402,6 +398,7 @@ function parsePGN(pgnString) {
     round: '',
     opening: '',
     eco: '',
+    ecoUrl: '',
     termination: '',
     moves: '',
     utcDate: '',
@@ -433,6 +430,7 @@ function parsePGN(pgnString) {
           else if (key === 'round') result.round = value;
           else if (key === 'opening') result.opening = value;
           else if (key === 'eco') result.eco = value;
+          else if (key === 'ecourl') result.ecoUrl = value;
           else if (key === 'termination') result.termination = value;
           else if (key === 'utcdate') result.utcDate = value;
           else if (key === 'utctime') result.utcTime = value;
@@ -458,56 +456,109 @@ function parsePGN(pgnString) {
 }
 
 /**
- * Splits PGN moves into SAN moves and clock times
+ * Splits PGN moves into SAN moves and clock times, plus structured arrays
  */
 function parseMovesAndTimes(movesText) {
-  if (!movesText) return { sanMoves: '', clockTimes: '', moveCount: 0 };
+  if (!movesText) return { 
+    sanMoves: '', 
+    clockTimes: '', 
+    moveCount: 0, 
+    movesArray: '', 
+    timesArray: '' 
+  };
   
   const sanMoves = [];
   const clockTimes = [];
+  const movesArray = [];
+  const timesArray = [];
   let moveCount = 0;
   
   // Split by spaces and process each token
   const tokens = movesText.split(/\s+/);
-  let currentMove = '';
-  let currentClocks = [];
+  let i = 0;
   
-  for (const token of tokens) {
-    if (token.match(/^\d+\./)) {
-      // Move number - save previous move if exists
-      if (currentMove) {
-        sanMoves.push(currentMove);
-        clockTimes.push(currentClocks.join(' '));
-        moveCount++;
+  while (i < tokens.length) {
+    const token = tokens[i];
+    
+    // Check if this is a move number (like "1." or "15.")
+    if (token.match(/^\d+\.$/)) {
+      // This is a white move number, next token should be the white move
+      i++;
+      if (i < tokens.length) {
+        const whiteMove = tokens[i];
+        if (!whiteMove.match(/^\{.*\}$/)) { // Not a comment
+          movesArray.push(whiteMove);
+          sanMoves.push(`${token} ${whiteMove}`);
+          
+          // Look for clock time after the move
+          i++;
+          if (i < tokens.length && tokens[i].match(/^\{\[%clk\s+([^\]]+)\]\}$/)) {
+            const timeMatch = tokens[i].match(/^\{\[%clk\s+([^\]]+)\]\}$/);
+            if (timeMatch) {
+              timesArray.push(timeMatch[1]);
+              clockTimes.push(timeMatch[1]);
+            }
+          } else {
+            i--; // Back up if no clock time found
+          }
+          moveCount++;
+        }
       }
-      currentMove = token;
-      currentClocks = [];
-    } else if (token.match(/^\d+\.\.\./)) {
-      // Black move number - just continue
-      currentMove += ' ' + token;
-    } else if (token.match(/^\{\[%clk\s+([^\]]+)\]\}/)) {
-      // Clock time - extract the time
-      const timeMatch = token.match(/^\{\[%clk\s+([^\]]+)\]\}/);
-      if (timeMatch) {
-        currentClocks.push(timeMatch[1]);
-      }
-    } else if (token && !token.match(/^\{.*\}$/)) {
-      // Regular move - add to current move
-      currentMove += (currentMove ? ' ' : '') + token;
     }
-  }
-  
-  // Add the last move
-  if (currentMove) {
-    sanMoves.push(currentMove);
-    clockTimes.push(currentClocks.join(' '));
-    moveCount++;
+    // Check if this is a black move number (like "1...")
+    else if (token.match(/^\d+\.\.\.$/)) {
+      // This is a black move number, next token should be the black move
+      i++;
+      if (i < tokens.length) {
+        const blackMove = tokens[i];
+        if (!blackMove.match(/^\{.*\}$/)) { // Not a comment
+          movesArray.push(blackMove);
+          sanMoves.push(`${token} ${blackMove}`);
+          
+          // Look for clock time after the move
+          i++;
+          if (i < tokens.length && tokens[i].match(/^\{\[%clk\s+([^\]]+)\]\}$/)) {
+            const timeMatch = tokens[i].match(/^\{\[%clk\s+([^\]]+)\]\}$/);
+            if (timeMatch) {
+              timesArray.push(timeMatch[1]);
+              clockTimes.push(timeMatch[1]);
+            }
+          } else {
+            i--; // Back up if no clock time found
+          }
+          moveCount++;
+        }
+      }
+    }
+    // Check if this is just a move without number (fallback parsing)
+    else if (token && !token.match(/^\{.*\}$/) && !token.match(/^\d+\./) && token.length > 0) {
+      // This might be a move without proper numbering
+      movesArray.push(token);
+      sanMoves.push(token);
+      
+      // Look for clock time after the move
+      i++;
+      if (i < tokens.length && tokens[i].match(/^\{\[%clk\s+([^\]]+)\]\}$/)) {
+        const timeMatch = tokens[i].match(/^\{\[%clk\s+([^\]]+)\]\}$/);
+        if (timeMatch) {
+          timesArray.push(timeMatch[1]);
+          clockTimes.push(timeMatch[1]);
+        }
+      } else {
+        i--; // Back up if no clock time found
+      }
+      moveCount++;
+    }
+    
+    i++;
   }
   
   return {
     sanMoves: sanMoves.join(' '),
     clockTimes: clockTimes.join(' '),
-    moveCount: moveCount
+    moveCount: moveCount,
+    movesArray: JSON.stringify(movesArray),
+    timesArray: JSON.stringify(timesArray)
   };
 }
 
@@ -551,6 +602,7 @@ function computeGameDuration(startTime, endTime, startDate, endDate) {
     return '';
   }
 }
+
 /**
  * Computes a normalized game format label based on rules and time class
  */
@@ -582,6 +634,7 @@ function formatDateTime(dateObj) {
   const ss = pad2(dateObj.getSeconds());
   return `${m}/${d}/${y} ${hh}:${mm}:${ss}`;
 }
+
 function gameToRow(game) {
   const pgn = game.pgn || '';
   const metadata = parsePGN(pgn);
@@ -615,25 +668,28 @@ function gameToRow(game) {
     // 14-15
     game.accuracies?.white ?? '',
     game.accuracies?.black ?? '',
-    // 16-22 PGN-derived metadata
+    // 16-23 PGN-derived metadata (added ECO URL)
     metadata.event || '',
     metadata.site || '',
     metadata.date || '',
     metadata.round || '',
     metadata.opening || '',
     metadata.eco || '',
+    metadata.ecoUrl || '',
     metadata.termination || '',
-    // 23-28 PGN extra tags
+    // 24-29 PGN extra tags
     metadata.utcDate || '',
     metadata.utcTime || '',
     metadata.startTime || '',
     metadata.endDate || '',
     metadata.endTime || '',
     metadata.currentPosition || '',
-    // 29-33 New columns
+    // 30-35 PGN and moves data (added structured arrays)
     pgn,
     movesData.sanMoves || '',
     movesData.clockTimes || '',
+    movesData.movesArray || '',
+    movesData.timesArray || '',
     duration || '',
     movesData.moveCount || 0
   ];
