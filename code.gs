@@ -163,8 +163,9 @@ function fetchArchives(username) {
 
 /**
  * Calculate rating changes by comparing current ratings with previous entry
+ * Enhanced to handle same-day updates more intelligently
  */
-function calculateRatingChanges(currentData, previousData, headers) {
+function calculateRatingChanges(currentData, previousData, headers, currentPullTime) {
   const changes = {};
   
   // Find rating columns that end with '.rating'
@@ -172,6 +173,20 @@ function calculateRatingChanges(currentData, previousData, headers) {
     header.toLowerCase().includes('rating') && 
     !header.toLowerCase().includes('change')
   );
+  
+  // Check if previous entry was from today
+  const today = new Date();
+  const previousPullTime = previousData['Pulled At'] ? new Date(previousData['Pulled At']) : null;
+  
+  let isSameDay = false;
+  let hoursSincePrevious = 0;
+  
+  if (previousPullTime) {
+    isSameDay = previousPullTime.toDateString() === today.toDateString();
+    hoursSincePrevious = (currentPullTime.getTime() - previousPullTime.getTime()) / (1000 * 60 * 60);
+  }
+  
+  const minimumHoursForChange = 6; // Configurable threshold
   
   for (const ratingCol of ratingColumns) {
     const currentRating = parseFloat(currentData[ratingCol]) || 0;
@@ -182,7 +197,20 @@ function calculateRatingChanges(currentData, previousData, headers) {
     
     // Create change column name
     const changeCol = ratingCol.replace('.rating', '.rating_change');
-    changes[changeCol] = previousRating > 0 ? change : ''; // Only show change if there was a previous rating
+    
+    // Only show change if:
+    // 1. There was a previous rating
+    // 2. Either not same day OR enough time has passed OR rating actually changed
+    if (previousRating > 0) {
+      if (!isSameDay || hoursSincePrevious >= minimumHoursForChange || change !== 0) {
+        changes[changeCol] = change;
+      } else {
+        // Same day, not enough time passed, no rating change
+        changes[changeCol] = '';
+      }
+    } else {
+      changes[changeCol] = ''; // No previous rating to compare
+    }
   }
   
   return changes;
@@ -276,7 +304,7 @@ function fetchPlayerStats() {
   // Calculate rating changes if we have previous data
   let ratingChanges = {};
   if (Object.keys(previousData).length > 0) {
-    ratingChanges = calculateRatingChanges(flat, previousData, keys);
+    ratingChanges = calculateRatingChanges(flat, previousData, keys, pulledAt);
   }
 
   // If no headers or header mismatch, rewrite header row
